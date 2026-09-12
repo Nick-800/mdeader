@@ -1,7 +1,9 @@
+use crate::ai::{context::DocumentContext, view::AiView, AiManager};
 use crate::config::Config;
 use crate::document::{Document, SearchMatch};
 use crate::export::HtmlExporter;
 use crate::image_loader::ImageCache;
+use crate::ipc::{IpcCommand, IpcServer};
 use crate::renderer::{MarkdownRenderer, RenderEvent};
 use crate::syntax::SyntaxHighlighter;
 use crate::theme::{ThemeKind, ThemePalette};
@@ -24,6 +26,12 @@ pub struct MdeaderApp {
     pub highlighter: SyntaxHighlighter,
     pub image_cache: ImageCache,
     pub toc_view: TocView,
+
+    // AI Assistant state
+    pub ai: AiManager,
+
+    // Remote IPC Server
+    pub ipc_server: Option<IpcServer>,
 
     // Search state
     pub search_query: String,
@@ -59,6 +67,12 @@ impl MdeaderApp {
         cc.egui_ctx.set_visuals(theme_kind.palette().to_visuals(theme_kind.is_dark()));
 
         let clipboard = Clipboard::new().ok();
+        let ipc_server = if config.ipc_enabled {
+            IpcServer::start(config.ipc_port, cc.egui_ctx.clone())
+        } else {
+            None
+        };
+
         let mut app = Self {
             config,
             document: None,
@@ -67,6 +81,8 @@ impl MdeaderApp {
             highlighter: SyntaxHighlighter::new(),
             image_cache: ImageCache::new(),
             toc_view: TocView::new(),
+            ai: AiManager::new(),
+            ipc_server,
             search_query: String::new(),
             search_open: false,
             search_results: Vec::new(),
@@ -120,6 +136,18 @@ impl MdeaderApp {
                     self.update_search();
                 }
                 self.show_toast("Reloaded file".to_string());
+            }
+        }
+    }
+
+    pub fn jump_to_heading(&mut self, title: &str) {
+        if let Some(ref doc) = self.document {
+            let lower = title.to_lowercase();
+            if let Some((idx, _)) = doc.headings.iter().enumerate().find(|(_, h)| h.title.to_lowercase().contains(&lower)) {
+                self.target_heading_idx = Some(idx);
+                self.active_heading_idx = Some(idx);
+                let heading_name = doc.headings[idx].title.clone();
+                self.show_toast(format!("Jumped to {}", heading_name));
             }
         }
     }
@@ -238,6 +266,14 @@ impl MdeaderApp {
             let _ = self.config.save();
         }
 
+        // Ctrl+Shift+A or Ctrl+I: Toggle AI Drawer
+        if (input.modifiers.command && input.modifiers.shift && input.key_pressed(Key::A))
+            || (input.modifiers.command && input.key_pressed(Key::I))
+        {
+            self.config.show_ai = !self.config.show_ai;
+            let _ = self.config.save();
+        }
+
         // Drag & Drop
         for file in &input.raw.dropped_files {
             if let Some(ref path) = file.path {
@@ -283,6 +319,12 @@ impl MdeaderApp {
             let search_btn_text = if self.search_open { "Search" } else { "Find (Ctrl+F)" };
             if ui.selectable_label(self.search_open, search_btn_text).clicked() {
                 self.search_open = !self.search_open;
+            }
+
+            let ai_btn_text = if self.config.show_ai { "Hide AI" } else { "AI Assistant" };
+            if ui.selectable_label(self.config.show_ai, ai_btn_text).on_hover_text("Toggle AI Assistant (Ctrl+Shift+A)").clicked() {
+                self.config.show_ai = !self.config.show_ai;
+                let _ = self.config.save();
             }
 
             ui.separator();
@@ -426,6 +468,11 @@ impl MdeaderApp {
             }
 
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                // IPC indicator
+                if self.config.ipc_enabled && self.ipc_server.is_some() {
+                    ui.colored_label(palette.muted, format!("[IPC :{}]", self.config.ipc_port));
+                }
+
                 // Toast
                 if let Some((ref msg, ref instant)) = self.toast {
                     if instant.elapsed().as_secs() < 3 {
@@ -447,6 +494,45 @@ impl MdeaderApp {
 impl eframe::App for MdeaderApp {
     fn update(&mut self, ctx: &Context, _frame: &mut eframe::Frame) {
         self.handle_shortcuts(ctx);
+
+        // Update AI state
+        self.ai.update(ctx);
+
+        // Process incoming IPC commands
+        let mut pending_commands = Vec::new();
+        if let Some(ref server) = self.ipc_server {
+            while let Some(cmd) = server.try_recv() {
+                pending_commands.push(cmd);
+            }
+        }
+
+        for cmd in pending_commands {
+            match cmd {
+                IpcCommand::OpenFile(path) => {
+                    self.open_file(&path);
+                }
+                IpcCommand::JumpToHeading(heading) => {
+                    self.jump_to_heading(&heading);
+                }
+                IpcCommand::Reload => {
+                    self.reload_current_file();
+                }
+                IpcCommand::AskAi(prompt) => {
+                    self.config.show_ai = true;
+                    let doc_context = DocumentContext::extract_document_context(
+                        self.document.as_ref(),
+                        self.target_heading_idx.or(self.active_heading_idx),
+                    );
+                    let system_prompt = DocumentContext::build_system_prompt(
+                        self.current_path.as_deref(),
+                        self.document.as_ref(),
+                    );
+                    let full_prompt = format!("{}\n\nUser Question:\n{}", doc_context, prompt);
+                    self.ai.send_prompt(&self.config.ai, system_prompt, full_prompt, ctx.clone());
+                }
+                IpcCommand::Ping => {}
+            }
+        }
 
         // Check file watcher events
         if self.config.watch_mode && self.watcher.has_changes() {
@@ -489,6 +575,25 @@ impl eframe::App for MdeaderApp {
                 });
         }
 
+        // Right AI Assistant Panel
+        if self.config.show_ai {
+            SidePanel::right("ai_drawer")
+                .default_width(self.config.ai_width)
+                .min_width(260.0)
+                .max_width(600.0)
+                .show(ctx, |ui| {
+                    AiView::render(
+                        ui,
+                        &mut self.ai,
+                        &mut self.config,
+                        self.current_path.as_deref(),
+                        self.document.as_ref(),
+                        self.target_heading_idx.or(self.active_heading_idx),
+                        &palette,
+                    );
+                });
+        }
+
         // Central Content Area
         CentralPanel::default().show(ctx, |ui| {
             if let Some(ref doc) = self.document {
@@ -527,6 +632,14 @@ impl eframe::App for MdeaderApp {
                         }
                         RenderEvent::CopyToClipboard(text) => {
                             self.copy_to_clipboard(&text);
+                        }
+                        RenderEvent::ExplainCode { lang, code } => {
+                            self.config.show_ai = true;
+                            let system_prompt = DocumentContext::build_system_prompt(
+                                self.current_path.as_deref(),
+                                self.document.as_ref(),
+                            );
+                            self.ai.explain_code(&self.config.ai, system_prompt, &lang, &code, ctx.clone());
                         }
                     }
                 }

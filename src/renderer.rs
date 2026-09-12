@@ -13,6 +13,7 @@ pub enum RenderEvent {
     OpenLink(String),
     OpenFilePath(PathBuf),
     CopyToClipboard(String),
+    ExplainCode { lang: String, code: String },
 }
 
 pub struct MarkdownRenderer<'a> {
@@ -341,7 +342,13 @@ impl<'a> MarkdownRenderer<'a> {
 
                     ui.with_layout(egui::Layout::right_to_left(Align::Center), |ui| {
                         if ui.button("Copy").on_hover_text("Copy code to clipboard").clicked() {
-                            self.events.push(RenderEvent::CopyToClipboard(code_str));
+                            self.events.push(RenderEvent::CopyToClipboard(code_str.clone()));
+                        }
+                        if ui.button("Explain").on_hover_text("Ask AI Assistant to explain this code").clicked() {
+                            self.events.push(RenderEvent::ExplainCode {
+                                lang: lang.to_string(),
+                                code: code_str,
+                            });
                         }
                     });
                 });

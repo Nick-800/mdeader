@@ -1,8 +1,10 @@
+mod ai;
 mod app;
 mod config;
 mod document;
 mod export;
 mod image_loader;
+mod ipc;
 mod renderer;
 mod syntax;
 mod theme;
@@ -11,6 +13,7 @@ mod watcher;
 
 use app::MdeaderApp;
 use clap::Parser;
+use ipc::{IpcClient, IpcCommand};
 use std::path::PathBuf;
 
 #[derive(Parser, Debug)]
@@ -31,10 +34,102 @@ struct Cli {
     /// Initial zoom factor (e.g. 1.0, 1.25)
     #[arg(short, long)]
     zoom: Option<f32>,
+
+    /// Remote command: open file in running mdeader instance
+    #[arg(long = "remote-open", value_name = "FILE")]
+    remote_open: Option<PathBuf>,
+
+    /// Remote command: jump to heading in running mdeader instance
+    #[arg(long = "remote-heading", value_name = "HEADING")]
+    remote_heading: Option<String>,
+
+    /// Remote command: reload file in running mdeader instance
+    #[arg(long = "remote-reload")]
+    remote_reload: bool,
+
+    /// Remote command: send AI prompt in running mdeader instance
+    #[arg(long = "remote-ai", value_name = "PROMPT")]
+    remote_ai: Option<String>,
+
+    /// Remote command: check if mdeader is running
+    #[arg(long = "remote-ping")]
+    remote_ping: bool,
+
+    /// Remote IPC port (default: 19842)
+    #[arg(long = "remote-port")]
+    remote_port: Option<u16>,
 }
 
 fn main() -> eframe::Result<()> {
     let args = Cli::parse();
+
+    // Handle remote IPC commands if specified
+    let port = args.remote_port.unwrap_or(19842);
+    if let Some(ref path) = args.remote_open {
+        let abs_path = std::fs::canonicalize(path).unwrap_or_else(|_| path.clone());
+        match IpcClient::send(port, &IpcCommand::OpenFile(abs_path)) {
+            Ok(_) => {
+                println!("[OK] Sent open command to running mdeader instance on port {}", port);
+                return Ok(());
+            }
+            Err(e) => {
+                eprintln!("[ERROR] {}", e);
+                std::process::exit(1);
+            }
+        }
+    }
+
+    if let Some(ref heading) = args.remote_heading {
+        match IpcClient::send(port, &IpcCommand::JumpToHeading(heading.clone())) {
+            Ok(_) => {
+                println!("[OK] Sent jump to heading command to running mdeader instance on port {}", port);
+                return Ok(());
+            }
+            Err(e) => {
+                eprintln!("[ERROR] {}", e);
+                std::process::exit(1);
+            }
+        }
+    }
+
+    if args.remote_reload {
+        match IpcClient::send(port, &IpcCommand::Reload) {
+            Ok(_) => {
+                println!("[OK] Sent reload command to running mdeader instance on port {}", port);
+                return Ok(());
+            }
+            Err(e) => {
+                eprintln!("[ERROR] {}", e);
+                std::process::exit(1);
+            }
+        }
+    }
+
+    if let Some(ref prompt) = args.remote_ai {
+        match IpcClient::send(port, &IpcCommand::AskAi(prompt.clone())) {
+            Ok(_) => {
+                println!("[OK] Sent AI prompt to running mdeader instance on port {}", port);
+                return Ok(());
+            }
+            Err(e) => {
+                eprintln!("[ERROR] {}", e);
+                std::process::exit(1);
+            }
+        }
+    }
+
+    if args.remote_ping {
+        match IpcClient::send(port, &IpcCommand::Ping) {
+            Ok(msg) => {
+                println!("[OK] Running mdeader instance replied: {}", msg);
+                return Ok(());
+            }
+            Err(e) => {
+                eprintln!("[ERROR] {}", e);
+                std::process::exit(1);
+            }
+        }
+    }
 
     let initial_title = if let Some(ref path) = args.file {
         format!(
