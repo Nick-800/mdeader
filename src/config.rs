@@ -47,6 +47,9 @@ pub struct Config {
 
     #[serde(default = "default_max_content_width")]
     pub max_content_width: f32,
+
+    #[serde(default)]
+    pub keybindings: crate::keybindings::KeybindingsConfig,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -157,6 +160,7 @@ impl Default for Config {
             ipc_port: default_ipc_port(),
             vim_mode: default_vim_mode(),
             max_content_width: default_max_content_width(),
+            keybindings: crate::keybindings::KeybindingsConfig::default(),
         }
     }
 }

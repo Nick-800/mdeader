@@ -5,6 +5,7 @@ mod document;
 mod export;
 mod image_loader;
 mod ipc;
+mod keybindings;
 mod renderer;
 mod syntax;
 mod theme;

@@ -1,27 +1,5 @@
-use egui::{Context, Key};
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum VimAction {
-    ScrollDownLine,
-    ScrollUpLine,
-    ScrollDownHalfPage,
-    ScrollUpHalfPage,
-    ScrollTop,
-    ScrollBottom,
-    FocusSearch,
-    SearchNext,
-    SearchPrev,
-    ToggleToc,
-    ToggleAi,
-    ToggleZen,
-    ToggleSlideMode,
-    Reload,
-    OpenFile,
-    CopyRaw,
-    QuitOrEscape,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(dead_code)]
 pub enum VimModeState {
     Normal,
     Find,
@@ -31,8 +9,6 @@ pub enum VimModeState {
 pub struct VimController {
     pub enabled: bool,
     pub mode: VimModeState,
-    pub pending_keys: String,
-    pub last_key_time: Option<std::time::Instant>,
 }
 
 impl Default for VimController {
@@ -46,154 +22,13 @@ impl VimController {
         Self {
             enabled,
             mode: VimModeState::Normal,
-            pending_keys: String::new(),
-            last_key_time: None,
         }
-    }
-
-    /// Handles keyboard events according to Vim navigation rules.
-    pub fn handle_input(&mut self, ctx: &Context) -> Option<VimAction> {
-        if !self.enabled {
-            return None;
-        }
-
-        let has_focus = ctx.wants_keyboard_input();
-        let input = ctx.input(|i| i.clone());
-
-        // Escape always resets focus and returns to Normal mode
-        if input.key_pressed(Key::Escape) {
-            self.mode = VimModeState::Normal;
-            self.pending_keys.clear();
-            ctx.memory_mut(|m| {
-                if let Some(id) = m.focused() {
-                    m.surrender_focus(id);
-                }
-            });
-            return Some(VimAction::QuitOrEscape);
-        }
-
-        // If an input textfield currently has keyboard focus, let user type
-        if has_focus {
-            return None;
-        }
-
-        // Expire pending keys if older than 1 second
-        if let Some(time) = self.last_key_time {
-            if time.elapsed() > std::time::Duration::from_millis(1000) {
-                self.pending_keys.clear();
-                self.last_key_time = None;
-            }
-        }
-
-        // Only process navigation in Normal mode
-        if self.mode != VimModeState::Normal {
-            return None;
-        }
-
-        let has_cmd = input.modifiers.command || input.modifiers.ctrl;
-
-        // Navigation key actions: Ctrl+D / Ctrl+U
-        if has_cmd && input.key_pressed(Key::D) {
-            self.pending_keys.clear();
-            return Some(VimAction::ScrollDownHalfPage);
-        }
-        if has_cmd && input.key_pressed(Key::U) {
-            self.pending_keys.clear();
-            return Some(VimAction::ScrollUpHalfPage);
-        }
-
-        // Only handle unmodified single letter keys if no Command / Ctrl is pressed
-        if !has_cmd {
-            if input.key_pressed(Key::J) || input.key_pressed(Key::ArrowDown) {
-                self.pending_keys.clear();
-                return Some(VimAction::ScrollDownLine);
-            }
-            if input.key_pressed(Key::K) || input.key_pressed(Key::ArrowUp) {
-                self.pending_keys.clear();
-                return Some(VimAction::ScrollUpLine);
-            }
-
-            // 'gg' or 'G'
-            if input.modifiers.shift && input.key_pressed(Key::G) {
-                self.pending_keys.clear();
-                self.last_key_time = None;
-                return Some(VimAction::ScrollBottom);
-            }
-
-            if input.key_pressed(Key::G) {
-                if self.pending_keys == "g" {
-                    self.pending_keys.clear();
-                    self.last_key_time = None;
-                    return Some(VimAction::ScrollTop);
-                } else {
-                    self.pending_keys = "g".to_string();
-                    self.last_key_time = Some(std::time::Instant::now());
-                    return None;
-                }
-            }
-
-            // 'yy' copy
-            if input.key_pressed(Key::Y) {
-                if self.pending_keys == "y" {
-                    self.pending_keys.clear();
-                    self.last_key_time = None;
-                    return Some(VimAction::CopyRaw);
-                } else {
-                    self.pending_keys = "y".to_string();
-                    self.last_key_time = Some(std::time::Instant::now());
-                    return None;
-                }
-            }
-
-            // Search: '/'
-            if input.key_pressed(Key::Slash) {
-                self.mode = VimModeState::Find;
-                return Some(VimAction::FocusSearch);
-            }
-
-            // Next / Prev search: 'n' / 'N'
-            if input.modifiers.shift && input.key_pressed(Key::N) {
-                return Some(VimAction::SearchPrev);
-            }
-            if input.key_pressed(Key::N) {
-                return Some(VimAction::SearchNext);
-            }
-
-            // Toggle TOC: 'b'
-            if input.key_pressed(Key::B) {
-                return Some(VimAction::ToggleToc);
-            }
-
-            // Toggle AI: 'a'
-            if input.key_pressed(Key::A) {
-                return Some(VimAction::ToggleAi);
-            }
-
-            // Toggle Zen Mode: 'z'
-            if input.key_pressed(Key::Z) {
-                return Some(VimAction::ToggleZen);
-            }
-
-            // Toggle Slide Presentation Mode: 'p'
-            if input.key_pressed(Key::P) {
-                return Some(VimAction::ToggleSlideMode);
-            }
-
-            // Reload: 'r'
-            if input.key_pressed(Key::R) {
-                return Some(VimAction::Reload);
-            }
-
-            // Open: 'o'
-            if input.key_pressed(Key::O) {
-                return Some(VimAction::OpenFile);
-            }
-        }
-
-        None
     }
 
     pub fn status_badge(&self) -> &'static str {
+        if !self.enabled {
+            return "[VIM: OFF]";
+        }
         match self.mode {
             VimModeState::Normal => "[VIM: NORMAL]",
             VimModeState::Find => "[VIM: FIND]",
@@ -211,5 +46,8 @@ mod tests {
         assert!(vim.enabled);
         assert_eq!(vim.mode, VimModeState::Normal);
         assert_eq!(vim.status_badge(), "[VIM: NORMAL]");
+
+        let vim_off = VimController::new(false);
+        assert_eq!(vim_off.status_badge(), "[VIM: OFF]");
     }
 }

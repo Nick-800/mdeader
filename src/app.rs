@@ -4,17 +4,18 @@ use crate::document::{Document, SearchMatch};
 use crate::export::HtmlExporter;
 use crate::image_loader::ImageCache;
 use crate::ipc::{IpcCommand, IpcServer};
+use crate::keybindings::{KeyActionManager, ParsedShortcut};
 use crate::renderer::{MarkdownRenderer, RenderEvent};
 use crate::syntax::SyntaxHighlighter;
 use crate::theme::{ThemeKind, ThemePalette};
 use crate::theme_loader::{CustomTheme, ThemeLoader};
 use crate::toc::TocView;
-use crate::vim::{VimAction, VimController};
+use crate::vim::VimController;
 use crate::watcher::FileWatcher;
 use arboard::Clipboard;
 use eframe::egui;
 use egui::{
-    Align, CentralPanel, Color32, Context, Key, Layout, ScrollArea, SidePanel,
+    Align, CentralPanel, Color32, Context, Id, Key, Layout, ScrollArea, SidePanel,
     TextEdit, TopBottomPanel, Ui,
 };
 use std::path::{Path, PathBuf};
@@ -61,8 +62,10 @@ pub struct MdeaderApp {
     pub toast: Option<(String, Instant)>,
 
     // Dynamic UI interaction
-    pub scroll_delta_y: f32,
     pub focus_search_input: bool,
+    pub key_manager: KeyActionManager,
+    pub scroll_to_top: bool,
+    pub scroll_to_bottom: bool,
 }
 
 impl MdeaderApp {
@@ -126,8 +129,10 @@ impl MdeaderApp {
             target_heading_idx: None,
             clipboard,
             toast: None,
-            scroll_delta_y: 0.0,
             focus_search_input: false,
+            key_manager: KeyActionManager::new(),
+            scroll_to_top: false,
+            scroll_to_bottom: false,
         };
 
         if let Some(path) = initial_file {
@@ -261,28 +266,166 @@ impl MdeaderApp {
     }
 
     fn handle_shortcuts(&mut self, ctx: &Context) {
-        // Vim mode keyboard handling
-        if let Some(action) = self.vim.handle_input(ctx) {
-            match action {
-                VimAction::ScrollDownLine => {
-                    self.scroll_delta_y -= 60.0;
+        let events = ctx.input(|i| i.events.clone());
+        let wants_text = ctx.wants_keyboard_input();
+        let main_scroll_id = Id::new("mdeader_doc_scroll");
+        let zen_scroll_id = Id::new("mdeader_zen_scroll");
+
+        // Parse configured standard shortcuts
+        let sc_open = ParsedShortcut::parse(&self.config.keybindings.open_file);
+        let sc_reload = ParsedShortcut::parse(&self.config.keybindings.reload);
+        let sc_find = ParsedShortcut::parse(&self.config.keybindings.find);
+        let sc_toc = ParsedShortcut::parse(&self.config.keybindings.toggle_toc);
+        let sc_ai = ParsedShortcut::parse(&self.config.keybindings.toggle_ai);
+        let sc_zen = ParsedShortcut::parse(&self.config.keybindings.toggle_zen);
+        let sc_slides = ParsedShortcut::parse(&self.config.keybindings.toggle_slides);
+        let sc_export = ParsedShortcut::parse(&self.config.keybindings.export_html);
+        let sc_zoom_in = ParsedShortcut::parse(&self.config.keybindings.zoom_in);
+        let sc_zoom_out = ParsedShortcut::parse(&self.config.keybindings.zoom_out);
+        let sc_zoom_reset = ParsedShortcut::parse(&self.config.keybindings.zoom_reset);
+        let sc_top = ParsedShortcut::parse(&self.config.keybindings.scroll_top);
+        let sc_bottom = ParsedShortcut::parse(&self.config.keybindings.scroll_bottom);
+        let sc_esc = ParsedShortcut::parse(&self.config.keybindings.escape);
+
+        // Parse configured Vim shortcuts
+        let vim_cfg = self.config.keybindings.vim.clone();
+        let sc_vim_down = ParsedShortcut::parse(&vim_cfg.scroll_down);
+        let sc_vim_up = ParsedShortcut::parse(&vim_cfg.scroll_up);
+        let sc_vim_down_half = ParsedShortcut::parse(&vim_cfg.scroll_down_half);
+        let sc_vim_up_half = ParsedShortcut::parse(&vim_cfg.scroll_up_half);
+        let sc_vim_find = ParsedShortcut::parse(&vim_cfg.find);
+        let sc_vim_next = ParsedShortcut::parse(&vim_cfg.next_match);
+        let sc_vim_prev = ParsedShortcut::parse(&vim_cfg.prev_match);
+        let sc_vim_toc = ParsedShortcut::parse(&vim_cfg.toggle_toc);
+        let sc_vim_ai = ParsedShortcut::parse(&vim_cfg.toggle_ai);
+        let sc_vim_zen = ParsedShortcut::parse(&vim_cfg.toggle_zen);
+        let sc_vim_slides = ParsedShortcut::parse(&vim_cfg.toggle_slides);
+        let sc_vim_reload = ParsedShortcut::parse(&vim_cfg.reload);
+        let sc_vim_open = ParsedShortcut::parse(&vim_cfg.open_file);
+        let sc_vim_bottom = ParsedShortcut::parse(&vim_cfg.scroll_bottom);
+
+        let scroll_ids = [main_scroll_id, zen_scroll_id];
+
+        for event in &events {
+            if let egui::Event::Key { key, pressed: true, repeat: _, modifiers, .. } = event {
+                // 1. Escape / Close Actions (always active)
+                if sc_esc.as_ref().map_or(false, |s| s.matches(*key, modifiers)) || *key == Key::Escape {
+                    self.key_manager.clear();
+                    if self.slide_mode {
+                        self.slide_mode = false;
+                    } else if self.zen_mode {
+                        self.zen_mode = false;
+                    } else if self.search_open {
+                        self.search_open = false;
+                    } else {
+                        ctx.memory_mut(|m| {
+                            if let Some(id) = m.focused() {
+                                m.surrender_focus(id);
+                            }
+                        });
+                    }
+                    continue;
                 }
-                VimAction::ScrollUpLine => {
-                    self.scroll_delta_y += 60.0;
+
+                let has_ctrl = modifiers.ctrl || modifiers.command || modifiers.mac_cmd;
+
+                // 2. Configured Standard Accelerators
+                if sc_open.as_ref().map_or(false, |s| s.matches(*key, modifiers))
+                    || (has_ctrl && *key == Key::O)
+                {
+                    self.trigger_open_file_dialog();
+                    continue;
                 }
-                VimAction::ScrollDownHalfPage => {
-                    self.scroll_delta_y -= 350.0;
+                if sc_reload.as_ref().map_or(false, |s| s.matches(*key, modifiers))
+                    || (has_ctrl && *key == Key::R)
+                {
+                    self.reload_current_file();
+                    continue;
                 }
-                VimAction::ScrollUpHalfPage => {
-                    self.scroll_delta_y += 350.0;
+                if sc_find.as_ref().map_or(false, |s| s.matches(*key, modifiers))
+                    || (has_ctrl && *key == Key::F)
+                {
+                    self.search_open = !self.search_open;
+                    if self.search_open {
+                        self.focus_search_input = true;
+                    }
+                    continue;
                 }
-                VimAction::ScrollTop => {
-                    self.scroll_delta_y += 100_000.0;
+                if sc_toc.as_ref().map_or(false, |s| s.matches(*key, modifiers))
+                    || (has_ctrl && *key == Key::B)
+                {
+                    self.config.show_toc = !self.config.show_toc;
+                    let _ = self.config.save();
+                    continue;
+                }
+                if sc_ai.as_ref().map_or(false, |s| s.matches(*key, modifiers))
+                    || (has_ctrl && modifiers.shift && *key == Key::A)
+                    || (has_ctrl && *key == Key::I)
+                {
+                    self.config.show_ai = !self.config.show_ai;
+                    let _ = self.config.save();
+                    continue;
+                }
+                if sc_zen.as_ref().map_or(false, |s| s.matches(*key, modifiers))
+                    || *key == Key::F11
+                {
+                    self.zen_mode = !self.zen_mode;
+                    continue;
+                }
+                if sc_slides.as_ref().map_or(false, |s| s.matches(*key, modifiers))
+                    || *key == Key::F5
+                {
+                    self.slide_mode = !self.slide_mode;
+                    self.current_slide = 0;
+                    continue;
+                }
+                if sc_export.as_ref().map_or(false, |s| s.matches(*key, modifiers))
+                    || (has_ctrl && *key == Key::E)
+                {
+                    self.trigger_export_dialog();
+                    continue;
+                }
+                if sc_zoom_in.as_ref().map_or(false, |s| s.matches(*key, modifiers))
+                    || (has_ctrl && (*key == Key::Plus || *key == Key::Equals))
+                {
+                    self.config.zoom = (self.config.zoom + 0.1).min(2.5);
+                    let _ = self.config.save();
+                    continue;
+                }
+                if sc_zoom_out.as_ref().map_or(false, |s| s.matches(*key, modifiers))
+                    || (has_ctrl && *key == Key::Minus)
+                {
+                    self.config.zoom = (self.config.zoom - 0.1).max(0.6);
+                    let _ = self.config.save();
+                    continue;
+                }
+                if sc_zoom_reset.as_ref().map_or(false, |s| s.matches(*key, modifiers))
+                    || (has_ctrl && *key == Key::Num0)
+                {
+                    self.config.zoom = 1.0;
+                    let _ = self.config.save();
+                    continue;
+                }
+                if sc_top.as_ref().map_or(false, |s| s.matches(*key, modifiers)) || *key == Key::Home {
+                    self.scroll_to_top = true;
                     self.target_heading_idx = Some(0);
                     self.active_heading_idx = Some(0);
+                    for id in &scroll_ids {
+                        if let Some(mut state) = egui::scroll_area::State::load(ctx, *id) {
+                            state.offset.y = 0.0;
+                            state.store(ctx, *id);
+                        }
+                    }
+                    continue;
                 }
-                VimAction::ScrollBottom => {
-                    self.scroll_delta_y -= 100_000.0;
+                if sc_bottom.as_ref().map_or(false, |s| s.matches(*key, modifiers)) || *key == Key::End {
+                    self.scroll_to_bottom = true;
+                    for id in &scroll_ids {
+                        if let Some(mut state) = egui::scroll_area::State::load(ctx, *id) {
+                            state.offset.y = f32::MAX;
+                            state.store(ctx, *id);
+                        }
+                    }
                     if let Some(ref doc) = self.document {
                         if !doc.headings.is_empty() {
                             let last = doc.headings.len() - 1;
@@ -290,189 +433,176 @@ impl MdeaderApp {
                             self.active_heading_idx = Some(last);
                         }
                     }
+                    continue;
                 }
-                VimAction::FocusSearch => {
-                    self.search_open = true;
-                    self.focus_search_input = true;
-                }
-                VimAction::SearchNext => {
-                    let count = self.search_results.len();
-                    if count > 0 {
-                        self.active_search_idx = (self.active_search_idx + 1) % count;
-                    }
-                }
-                VimAction::SearchPrev => {
-                    let count = self.search_results.len();
-                    if count > 0 {
-                        if self.active_search_idx == 0 {
-                            self.active_search_idx = count - 1;
-                        } else {
-                            self.active_search_idx -= 1;
+
+                // 3. Slide Presentation Navigation
+                if self.slide_mode {
+                    let total_slides = self.document.as_ref().map(|d| d.get_slides().len()).unwrap_or(0);
+                    if total_slides > 0 {
+                        if *key == Key::ArrowRight || *key == Key::Space || *key == Key::PageDown || *key == Key::L {
+                            self.current_slide = (self.current_slide + 1).min(total_slides - 1);
+                            continue;
+                        }
+                        if *key == Key::ArrowLeft || *key == Key::Backspace || *key == Key::PageUp || *key == Key::H {
+                            self.current_slide = self.current_slide.saturating_sub(1);
+                            continue;
                         }
                     }
                 }
-                VimAction::ToggleToc => {
-                    self.config.show_toc = !self.config.show_toc;
-                    let _ = self.config.save();
-                }
-                VimAction::ToggleAi => {
-                    self.config.show_ai = !self.config.show_ai;
-                    let _ = self.config.save();
-                }
-                VimAction::ToggleZen => {
-                    self.zen_mode = !self.zen_mode;
-                }
-                VimAction::ToggleSlideMode => {
-                    self.slide_mode = !self.slide_mode;
-                    self.current_slide = 0;
-                }
-                VimAction::Reload => {
-                    self.reload_current_file();
-                }
-                VimAction::OpenFile => {
-                    self.trigger_open_file_dialog();
-                }
-                VimAction::CopyRaw => {
-                    if let Some(ref doc) = self.document {
-                        let raw = doc.raw.clone();
-                        self.copy_to_clipboard(&raw);
+
+                // 4. Modal Vim Navigation (only when text input is not typing)
+                if self.config.vim_mode && !wants_text {
+                    // Half-page scrolls
+                    if sc_vim_down_half.as_ref().map_or(false, |s| s.matches(*key, modifiers))
+                        || (has_ctrl && *key == Key::D)
+                    {
+                        for id in &scroll_ids {
+                            if let Some(mut state) = egui::scroll_area::State::load(ctx, *id) {
+                                state.offset.y = (state.offset.y + 350.0).max(0.0);
+                                state.store(ctx, *id);
+                            }
+                        }
+                        continue;
+                    }
+                    if sc_vim_up_half.as_ref().map_or(false, |s| s.matches(*key, modifiers))
+                        || (has_ctrl && *key == Key::U)
+                    {
+                        for id in &scroll_ids {
+                            if let Some(mut state) = egui::scroll_area::State::load(ctx, *id) {
+                                state.offset.y = (state.offset.y - 350.0).max(0.0);
+                                state.store(ctx, *id);
+                            }
+                        }
+                        continue;
+                    }
+
+                    // Line scrolls
+                    if sc_vim_down.as_ref().map_or(false, |s| s.matches(*key, modifiers))
+                        || (!has_ctrl && (*key == Key::J || *key == Key::ArrowDown))
+                    {
+                        for id in &scroll_ids {
+                            if let Some(mut state) = egui::scroll_area::State::load(ctx, *id) {
+                                state.offset.y = (state.offset.y + 60.0).max(0.0);
+                                state.store(ctx, *id);
+                            }
+                        }
+                        continue;
+                    }
+                    if sc_vim_up.as_ref().map_or(false, |s| s.matches(*key, modifiers))
+                        || (!has_ctrl && (*key == Key::K || *key == Key::ArrowUp))
+                    {
+                        for id in &scroll_ids {
+                            if let Some(mut state) = egui::scroll_area::State::load(ctx, *id) {
+                                state.offset.y = (state.offset.y - 60.0).max(0.0);
+                                state.store(ctx, *id);
+                            }
+                        }
+                        continue;
+                    }
+
+                    // Vim bottom jump ('G')
+                    if sc_vim_bottom.as_ref().map_or(false, |s| s.matches(*key, modifiers))
+                        || (modifiers.shift && *key == Key::G)
+                    {
+                        self.scroll_to_bottom = true;
+                        for id in &scroll_ids {
+                            if let Some(mut state) = egui::scroll_area::State::load(ctx, *id) {
+                                state.offset.y = f32::MAX;
+                                state.store(ctx, *id);
+                            }
+                        }
+                        continue;
+                    }
+
+                    // Vim Chords ('gg', 'yy')
+                    if !has_ctrl && *key == Key::G {
+                        if let Some(chord) = self.key_manager.record_key("g") {
+                            if chord == vim_cfg.scroll_top || chord == "gg" {
+                                self.scroll_to_top = true;
+                                for id in &scroll_ids {
+                                    if let Some(mut state) = egui::scroll_area::State::load(ctx, *id) {
+                                        state.offset.y = 0.0;
+                                        state.store(ctx, *id);
+                                    }
+                                }
+                            }
+                        }
+                        continue;
+                    }
+                    if !has_ctrl && *key == Key::Y {
+                        if let Some(chord) = self.key_manager.record_key("y") {
+                            if chord == vim_cfg.copy_raw || chord == "yy" {
+                                if let Some(ref doc) = self.document {
+                                    let raw = doc.raw.clone();
+                                    self.copy_to_clipboard(&raw);
+                                }
+                            }
+                        }
+                        continue;
+                    }
+
+                    // Single key actions without Ctrl
+                    if !has_ctrl {
+                        if sc_vim_find.as_ref().map_or(false, |s| s.matches(*key, modifiers)) || *key == Key::Slash {
+                            self.search_open = true;
+                            self.focus_search_input = true;
+                            continue;
+                        }
+                        if sc_vim_next.as_ref().map_or(false, |s| s.matches(*key, modifiers)) || *key == Key::N {
+                            let count = self.search_results.len();
+                            if count > 0 {
+                                self.active_search_idx = (self.active_search_idx + 1) % count;
+                            }
+                            continue;
+                        }
+                        if sc_vim_prev.as_ref().map_or(false, |s| s.matches(*key, modifiers))
+                            || (modifiers.shift && *key == Key::N)
+                        {
+                            let count = self.search_results.len();
+                            if count > 0 {
+                                if self.active_search_idx == 0 {
+                                    self.active_search_idx = count - 1;
+                                } else {
+                                    self.active_search_idx -= 1;
+                                }
+                            }
+                            continue;
+                        }
+                        if sc_vim_toc.as_ref().map_or(false, |s| s.matches(*key, modifiers)) || *key == Key::B {
+                            self.config.show_toc = !self.config.show_toc;
+                            let _ = self.config.save();
+                            continue;
+                        }
+                        if sc_vim_ai.as_ref().map_or(false, |s| s.matches(*key, modifiers)) || *key == Key::A {
+                            self.config.show_ai = !self.config.show_ai;
+                            let _ = self.config.save();
+                            continue;
+                        }
+                        if sc_vim_zen.as_ref().map_or(false, |s| s.matches(*key, modifiers)) || *key == Key::Z {
+                            self.zen_mode = !self.zen_mode;
+                            continue;
+                        }
+                        if sc_vim_slides.as_ref().map_or(false, |s| s.matches(*key, modifiers)) || *key == Key::P {
+                            self.slide_mode = !self.slide_mode;
+                            self.current_slide = 0;
+                            continue;
+                        }
+                        if sc_vim_reload.as_ref().map_or(false, |s| s.matches(*key, modifiers)) || *key == Key::R {
+                            self.reload_current_file();
+                            continue;
+                        }
+                        if sc_vim_open.as_ref().map_or(false, |s| s.matches(*key, modifiers)) || *key == Key::O {
+                            self.trigger_open_file_dialog();
+                            continue;
+                        }
                     }
                 }
-                VimAction::QuitOrEscape => {
-                    if self.slide_mode {
-                        self.slide_mode = false;
-                    } else if self.zen_mode {
-                        self.zen_mode = false;
-                    } else if self.search_open {
-                        self.search_open = false;
-                    }
-                }
             }
-        }
-
-        let input = ctx.input(|i| i.clone());
-        let cmd = input.modifiers.command || input.modifiers.ctrl;
-
-        // F11: Toggle Zen Mode
-        if input.key_pressed(Key::F11) {
-            self.zen_mode = !self.zen_mode;
-        }
-
-        // F5: Toggle Presentation Slide Mode
-        if input.key_pressed(Key::F5) {
-            self.slide_mode = !self.slide_mode;
-            self.current_slide = 0;
-        }
-
-        // Slide Mode keyboard controls
-        if self.slide_mode {
-            let total_slides = self.document.as_ref().map(|d| d.get_slides().len()).unwrap_or(0);
-            if total_slides > 0 {
-                if input.key_pressed(Key::ArrowRight)
-                    || input.key_pressed(Key::Space)
-                    || input.key_pressed(Key::PageDown)
-                    || input.key_pressed(Key::L)
-                    || input.key_pressed(Key::ArrowDown)
-                {
-                    self.current_slide = (self.current_slide + 1).min(total_slides - 1);
-                }
-                if input.key_pressed(Key::ArrowLeft)
-                    || input.key_pressed(Key::Backspace)
-                    || input.key_pressed(Key::PageUp)
-                    || input.key_pressed(Key::H)
-                    || input.key_pressed(Key::ArrowUp)
-                {
-                    self.current_slide = self.current_slide.saturating_sub(1);
-                }
-            }
-        }
-
-        // Escape: Close Find, Exit Zen Mode, or Exit Slide Mode
-        if input.key_pressed(Key::Escape) {
-            if self.slide_mode {
-                self.slide_mode = false;
-            } else if self.zen_mode {
-                self.zen_mode = false;
-            } else if self.search_open {
-                self.search_open = false;
-            }
-        }
-
-        // Home: Jump to top of document
-        if input.key_pressed(Key::Home) {
-            self.scroll_delta_y += 100_000.0;
-            self.target_heading_idx = Some(0);
-            self.active_heading_idx = Some(0);
-        }
-
-        // End: Jump to bottom of document
-        if input.key_pressed(Key::End) {
-            self.scroll_delta_y -= 100_000.0;
-            if let Some(ref doc) = self.document {
-                if !doc.headings.is_empty() {
-                    let last = doc.headings.len() - 1;
-                    self.target_heading_idx = Some(last);
-                    self.active_heading_idx = Some(last);
-                }
-            }
-        }
-
-        // Ctrl+O: Open
-        if cmd && input.key_pressed(Key::O) {
-            self.trigger_open_file_dialog();
-        }
-
-        // Ctrl+R: Reload
-        if cmd && input.key_pressed(Key::R) {
-            self.reload_current_file();
-        }
-
-        // Ctrl+F: Find
-        if cmd && input.key_pressed(Key::F) {
-            self.search_open = !self.search_open;
-            if self.search_open {
-                self.focus_search_input = true;
-            }
-        }
-
-        // Ctrl+B: Toggle TOC
-        if cmd && input.key_pressed(Key::B) {
-            self.config.show_toc = !self.config.show_toc;
-            let _ = self.config.save();
-        }
-
-        // Ctrl+E: Export
-        if cmd && input.key_pressed(Key::E) {
-            self.trigger_export_dialog();
-        }
-
-        // Zoom: Ctrl+= or Ctrl++ (including Shift+=)
-        if cmd && (input.key_pressed(Key::Equals) || input.key_pressed(Key::Plus)) {
-            self.config.zoom = (self.config.zoom + 0.1).min(2.5);
-            let _ = self.config.save();
-        }
-
-        // Zoom: Ctrl+-
-        if cmd && input.key_pressed(Key::Minus) {
-            self.config.zoom = (self.config.zoom - 0.1).max(0.6);
-            let _ = self.config.save();
-        }
-
-        // Zoom: Ctrl+0 (Reset)
-        if cmd && input.key_pressed(Key::Num0) {
-            self.config.zoom = 1.0;
-            let _ = self.config.save();
-        }
-
-        // Ctrl+Shift+A or Ctrl+I: Toggle AI Drawer
-        if (cmd && input.modifiers.shift && input.key_pressed(Key::A))
-            || (cmd && input.key_pressed(Key::I))
-        {
-            self.config.show_ai = !self.config.show_ai;
-            let _ = self.config.save();
         }
 
         // Drag & Drop
+        let input = ctx.input(|i| i.clone());
         for file in &input.raw.dropped_files {
             if let Some(ref path) = file.path {
                 self.open_file(path);
@@ -885,20 +1015,26 @@ impl eframe::App for MdeaderApp {
                         self.target_heading_idx,
                     );
 
-                    ScrollArea::vertical()
-                        .auto_shrink([false, false])
-                        .show(ui, |ui| {
-                            if self.scroll_delta_y != 0.0 {
-                                ui.scroll_with_delta(egui::vec2(0.0, self.scroll_delta_y));
-                                self.scroll_delta_y = 0.0;
-                            }
-                            ui.vertical_centered(|ui| {
-                                ui.set_max_width(self.config.max_content_width);
-                                ui.add_space(20.0);
-                                renderer.render(ui, &doc.nodes, &self.highlighter, &mut self.image_cache);
-                                ui.add_space(40.0);
-                            });
+                    let mut scroll_area = ScrollArea::vertical()
+                        .id_source(Id::new("mdeader_zen_scroll"))
+                        .auto_shrink([false, false]);
+
+                    if self.scroll_to_top {
+                        scroll_area = scroll_area.vertical_scroll_offset(0.0);
+                        self.scroll_to_top = false;
+                    } else if self.scroll_to_bottom {
+                        scroll_area = scroll_area.vertical_scroll_offset(f32::MAX);
+                        self.scroll_to_bottom = false;
+                    }
+
+                    scroll_area.show(ui, |ui| {
+                        ui.vertical_centered(|ui| {
+                            ui.set_max_width(self.config.max_content_width);
+                            ui.add_space(20.0);
+                            renderer.render(ui, &doc.nodes, &self.highlighter, &mut self.image_cache);
+                            ui.add_space(40.0);
                         });
+                    });
 
                     self.target_heading_idx = None;
                     zen_events = renderer.events;
@@ -1010,20 +1146,26 @@ impl eframe::App for MdeaderApp {
                     self.target_heading_idx,
                 );
 
-                ScrollArea::vertical()
-                    .auto_shrink([false, false])
-                    .show(ui, |ui| {
-                        if self.scroll_delta_y != 0.0 {
-                            ui.scroll_with_delta(egui::vec2(0.0, self.scroll_delta_y));
-                            self.scroll_delta_y = 0.0;
-                        }
-                        ui.add_space(12.0);
-                        ui.vertical_centered(|ui| {
-                            ui.set_max_width(self.config.max_content_width);
-                            renderer.render(ui, &doc.nodes, &self.highlighter, &mut self.image_cache);
-                        });
-                        ui.add_space(32.0);
+                let mut scroll_area = ScrollArea::vertical()
+                    .id_source(Id::new("mdeader_doc_scroll"))
+                    .auto_shrink([false, false]);
+
+                if self.scroll_to_top {
+                    scroll_area = scroll_area.vertical_scroll_offset(0.0);
+                    self.scroll_to_top = false;
+                } else if self.scroll_to_bottom {
+                    scroll_area = scroll_area.vertical_scroll_offset(f32::MAX);
+                    self.scroll_to_bottom = false;
+                }
+
+                scroll_area.show(ui, |ui| {
+                    ui.add_space(12.0);
+                    ui.vertical_centered(|ui| {
+                        ui.set_max_width(self.config.max_content_width);
+                        renderer.render(ui, &doc.nodes, &self.highlighter, &mut self.image_cache);
                     });
+                    ui.add_space(32.0);
+                });
 
                 // Clear target heading once rendered
                 self.target_heading_idx = None;
