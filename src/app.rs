@@ -59,6 +59,10 @@ pub struct MdeaderApp {
     // Clipboard and Toast
     pub clipboard: Option<Clipboard>,
     pub toast: Option<(String, Instant)>,
+
+    // Dynamic UI interaction
+    pub scroll_delta_y: f32,
+    pub focus_search_input: bool,
 }
 
 impl MdeaderApp {
@@ -122,6 +126,8 @@ impl MdeaderApp {
             target_heading_idx: None,
             clipboard,
             toast: None,
+            scroll_delta_y: 0.0,
+            focus_search_input: false,
         };
 
         if let Some(path) = initial_file {
@@ -258,13 +264,25 @@ impl MdeaderApp {
         // Vim mode keyboard handling
         if let Some(action) = self.vim.handle_input(ctx) {
             match action {
-                VimAction::ScrollDownLine | VimAction::ScrollDownHalfPage => {}
-                VimAction::ScrollUpLine | VimAction::ScrollUpHalfPage => {}
+                VimAction::ScrollDownLine => {
+                    self.scroll_delta_y -= 60.0;
+                }
+                VimAction::ScrollUpLine => {
+                    self.scroll_delta_y += 60.0;
+                }
+                VimAction::ScrollDownHalfPage => {
+                    self.scroll_delta_y -= 350.0;
+                }
+                VimAction::ScrollUpHalfPage => {
+                    self.scroll_delta_y += 350.0;
+                }
                 VimAction::ScrollTop => {
+                    self.scroll_delta_y += 100_000.0;
                     self.target_heading_idx = Some(0);
                     self.active_heading_idx = Some(0);
                 }
                 VimAction::ScrollBottom => {
+                    self.scroll_delta_y -= 100_000.0;
                     if let Some(ref doc) = self.document {
                         if !doc.headings.is_empty() {
                             let last = doc.headings.len() - 1;
@@ -275,6 +293,7 @@ impl MdeaderApp {
                 }
                 VimAction::FocusSearch => {
                     self.search_open = true;
+                    self.focus_search_input = true;
                 }
                 VimAction::SearchNext => {
                     let count = self.search_results.len();
@@ -332,6 +351,7 @@ impl MdeaderApp {
         }
 
         let input = ctx.input(|i| i.clone());
+        let cmd = input.modifiers.command || input.modifiers.ctrl;
 
         // F11: Toggle Zen Mode
         if input.key_pressed(Key::F11) {
@@ -348,70 +368,86 @@ impl MdeaderApp {
         if self.slide_mode {
             let total_slides = self.document.as_ref().map(|d| d.get_slides().len()).unwrap_or(0);
             if total_slides > 0 {
-                if input.key_pressed(Key::ArrowRight) || input.key_pressed(Key::Space) || input.key_pressed(Key::PageDown) {
+                if input.key_pressed(Key::ArrowRight)
+                    || input.key_pressed(Key::Space)
+                    || input.key_pressed(Key::PageDown)
+                    || input.key_pressed(Key::L)
+                    || input.key_pressed(Key::ArrowDown)
+                {
                     self.current_slide = (self.current_slide + 1).min(total_slides - 1);
                 }
-                if input.key_pressed(Key::ArrowLeft) || input.key_pressed(Key::Backspace) || input.key_pressed(Key::PageUp) {
+                if input.key_pressed(Key::ArrowLeft)
+                    || input.key_pressed(Key::Backspace)
+                    || input.key_pressed(Key::PageUp)
+                    || input.key_pressed(Key::H)
+                    || input.key_pressed(Key::ArrowUp)
+                {
                     self.current_slide = self.current_slide.saturating_sub(1);
                 }
             }
-            if input.key_pressed(Key::Escape) {
+        }
+
+        // Escape: Close Find, Exit Zen Mode, or Exit Slide Mode
+        if input.key_pressed(Key::Escape) {
+            if self.slide_mode {
                 self.slide_mode = false;
+            } else if self.zen_mode {
+                self.zen_mode = false;
+            } else if self.search_open {
+                self.search_open = false;
             }
         }
 
         // Ctrl+O: Open
-        if input.modifiers.command && input.key_pressed(Key::O) {
+        if cmd && input.key_pressed(Key::O) {
             self.trigger_open_file_dialog();
         }
 
         // Ctrl+R: Reload
-        if input.modifiers.command && input.key_pressed(Key::R) {
+        if cmd && input.key_pressed(Key::R) {
             self.reload_current_file();
         }
 
         // Ctrl+F: Find
-        if input.modifiers.command && input.key_pressed(Key::F) {
+        if cmd && input.key_pressed(Key::F) {
             self.search_open = !self.search_open;
-        }
-
-        // Escape: Close Find
-        if input.key_pressed(Key::Escape) && self.search_open {
-            self.search_open = false;
+            if self.search_open {
+                self.focus_search_input = true;
+            }
         }
 
         // Ctrl+B: Toggle TOC
-        if input.modifiers.command && input.key_pressed(Key::B) {
+        if cmd && input.key_pressed(Key::B) {
             self.config.show_toc = !self.config.show_toc;
             let _ = self.config.save();
         }
 
         // Ctrl+E: Export
-        if input.modifiers.command && input.key_pressed(Key::E) {
+        if cmd && input.key_pressed(Key::E) {
             self.trigger_export_dialog();
         }
 
-        // Zoom: Ctrl+= or Ctrl++
-        if input.modifiers.command && (input.key_pressed(Key::Equals) || input.key_pressed(Key::Plus)) {
+        // Zoom: Ctrl+= or Ctrl++ (including Shift+=)
+        if cmd && (input.key_pressed(Key::Equals) || input.key_pressed(Key::Plus)) {
             self.config.zoom = (self.config.zoom + 0.1).min(2.5);
             let _ = self.config.save();
         }
 
         // Zoom: Ctrl+-
-        if input.modifiers.command && input.key_pressed(Key::Minus) {
+        if cmd && input.key_pressed(Key::Minus) {
             self.config.zoom = (self.config.zoom - 0.1).max(0.6);
             let _ = self.config.save();
         }
 
         // Zoom: Ctrl+0 (Reset)
-        if input.modifiers.command && input.key_pressed(Key::Num0) {
+        if cmd && input.key_pressed(Key::Num0) {
             self.config.zoom = 1.0;
             let _ = self.config.save();
         }
 
         // Ctrl+Shift+A or Ctrl+I: Toggle AI Drawer
-        if (input.modifiers.command && input.modifiers.shift && input.key_pressed(Key::A))
-            || (input.modifiers.command && input.key_pressed(Key::I))
+        if (cmd && input.modifiers.shift && input.key_pressed(Key::A))
+            || (cmd && input.key_pressed(Key::I))
         {
             self.config.show_ai = !self.config.show_ai;
             let _ = self.config.save();
@@ -453,7 +489,7 @@ impl MdeaderApp {
 
             ui.separator();
 
-            let toc_btn_text = if self.config.show_toc { "Hide TOC" } else { "TOC" };
+            let toc_btn_text = if self.config.show_toc { "Hide TOC (Ctrl+B)" } else { "TOC (Ctrl+B)" };
             if ui.selectable_label(self.config.show_toc, toc_btn_text).clicked() {
                 self.config.show_toc = !self.config.show_toc;
                 let _ = self.config.save();
@@ -462,6 +498,9 @@ impl MdeaderApp {
             let search_btn_text = if self.search_open { "Search" } else { "Find (Ctrl+F)" };
             if ui.selectable_label(self.search_open, search_btn_text).clicked() {
                 self.search_open = !self.search_open;
+                if self.search_open {
+                    self.focus_search_input = true;
+                }
             }
 
             let ai_btn_text = if self.config.show_ai { "Hide AI" } else { "AI Assistant" };
@@ -567,6 +606,10 @@ impl MdeaderApp {
                     .desired_width(260.0);
 
                 let response = ui.add(text_edit);
+                if self.focus_search_input {
+                    response.request_focus();
+                    self.focus_search_input = false;
+                }
                 if response.changed() {
                     self.update_search();
                 }
@@ -826,6 +869,10 @@ impl eframe::App for MdeaderApp {
                     ScrollArea::vertical()
                         .auto_shrink([false, false])
                         .show(ui, |ui| {
+                            if self.scroll_delta_y != 0.0 {
+                                ui.scroll_with_delta(egui::vec2(0.0, self.scroll_delta_y));
+                                self.scroll_delta_y = 0.0;
+                            }
                             ui.vertical_centered(|ui| {
                                 ui.set_max_width(self.config.max_content_width);
                                 ui.add_space(20.0);
@@ -947,6 +994,10 @@ impl eframe::App for MdeaderApp {
                 ScrollArea::vertical()
                     .auto_shrink([false, false])
                     .show(ui, |ui| {
+                        if self.scroll_delta_y != 0.0 {
+                            ui.scroll_with_delta(egui::vec2(0.0, self.scroll_delta_y));
+                            self.scroll_delta_y = 0.0;
+                        }
                         ui.add_space(12.0);
                         ui.vertical_centered(|ui| {
                             ui.set_max_width(self.config.max_content_width);

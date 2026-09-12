@@ -55,14 +55,18 @@ impl VimController {
             return None;
         }
 
-        let has_focus = ctx.memory(|m| m.focused().is_some());
+        let has_focus = ctx.wants_keyboard_input();
         let input = ctx.input(|i| i.clone());
 
         // Escape always resets focus and returns to Normal mode
         if input.key_pressed(Key::Escape) {
             self.mode = VimModeState::Normal;
             self.pending_keys.clear();
-            ctx.memory_mut(|m| *m = egui::Memory::default());
+            ctx.memory_mut(|m| {
+                if let Some(id) = m.focused() {
+                    m.surrender_focus(id);
+                }
+            });
             return Some(VimAction::QuitOrEscape);
         }
 
@@ -76,95 +80,100 @@ impl VimController {
             return None;
         }
 
-        // Navigation key actions
-        if input.modifiers.command && input.key_pressed(Key::D) {
+        let has_cmd = input.modifiers.command || input.modifiers.ctrl;
+
+        // Navigation key actions: Ctrl+D / Ctrl+U
+        if has_cmd && input.key_pressed(Key::D) {
             return Some(VimAction::ScrollDownHalfPage);
         }
-        if input.modifiers.command && input.key_pressed(Key::U) {
+        if has_cmd && input.key_pressed(Key::U) {
             return Some(VimAction::ScrollUpHalfPage);
         }
 
-        if input.key_pressed(Key::J) || input.key_pressed(Key::ArrowDown) {
-            return Some(VimAction::ScrollDownLine);
-        }
-        if input.key_pressed(Key::K) || input.key_pressed(Key::ArrowUp) {
-            return Some(VimAction::ScrollUpLine);
-        }
-
-        // 'gg' or 'G'
-        if input.modifiers.shift && input.key_pressed(Key::G) {
-            self.pending_keys.clear();
-            return Some(VimAction::ScrollBottom);
-        }
-
-        if input.key_pressed(Key::G) {
-            if self.pending_keys == "g" {
-                self.pending_keys.clear();
-                return Some(VimAction::ScrollTop);
-            } else {
-                self.pending_keys = "g".to_string();
-                return None;
+        // Only handle unmodified single letter keys if no Command / Ctrl is pressed
+        if !has_cmd {
+            if input.key_pressed(Key::J) || input.key_pressed(Key::ArrowDown) {
+                return Some(VimAction::ScrollDownLine);
             }
-        }
-
-        // 'yy' copy
-        if input.key_pressed(Key::Y) {
-            if self.pending_keys == "y" {
-                self.pending_keys.clear();
-                return Some(VimAction::CopyRaw);
-            } else {
-                self.pending_keys = "y".to_string();
-                return None;
+            if input.key_pressed(Key::K) || input.key_pressed(Key::ArrowUp) {
+                return Some(VimAction::ScrollUpLine);
             }
-        }
 
-        // Reset pending keys if any other key was pressed
-        if !self.pending_keys.is_empty() {
-            self.pending_keys.clear();
-        }
+            // 'gg' or 'G'
+            if input.modifiers.shift && input.key_pressed(Key::G) {
+                self.pending_keys.clear();
+                return Some(VimAction::ScrollBottom);
+            }
 
-        // Search: '/'
-        if input.key_pressed(Key::Slash) {
-            self.mode = VimModeState::Find;
-            return Some(VimAction::FocusSearch);
-        }
+            if input.key_pressed(Key::G) {
+                if self.pending_keys == "g" {
+                    self.pending_keys.clear();
+                    return Some(VimAction::ScrollTop);
+                } else {
+                    self.pending_keys = "g".to_string();
+                    return None;
+                }
+            }
 
-        // Next / Prev search: 'n' / 'N'
-        if input.modifiers.shift && input.key_pressed(Key::N) {
-            return Some(VimAction::SearchPrev);
-        }
-        if input.key_pressed(Key::N) {
-            return Some(VimAction::SearchNext);
-        }
+            // 'yy' copy
+            if input.key_pressed(Key::Y) {
+                if self.pending_keys == "y" {
+                    self.pending_keys.clear();
+                    return Some(VimAction::CopyRaw);
+                } else {
+                    self.pending_keys = "y".to_string();
+                    return None;
+                }
+            }
 
-        // Toggle TOC: 'b'
-        if input.key_pressed(Key::B) {
-            return Some(VimAction::ToggleToc);
-        }
+            // Reset pending keys if any other key was pressed
+            if !self.pending_keys.is_empty() {
+                self.pending_keys.clear();
+            }
 
-        // Toggle AI: 'a'
-        if input.key_pressed(Key::A) {
-            return Some(VimAction::ToggleAi);
-        }
+            // Search: '/'
+            if input.key_pressed(Key::Slash) {
+                self.mode = VimModeState::Find;
+                return Some(VimAction::FocusSearch);
+            }
 
-        // Toggle Zen Mode: 'z'
-        if input.key_pressed(Key::Z) {
-            return Some(VimAction::ToggleZen);
-        }
+            // Next / Prev search: 'n' / 'N'
+            if input.modifiers.shift && input.key_pressed(Key::N) {
+                return Some(VimAction::SearchPrev);
+            }
+            if input.key_pressed(Key::N) {
+                return Some(VimAction::SearchNext);
+            }
 
-        // Toggle Slide Presentation Mode: 'p'
-        if input.key_pressed(Key::P) {
-            return Some(VimAction::ToggleSlideMode);
-        }
+            // Toggle TOC: 'b'
+            if input.key_pressed(Key::B) {
+                return Some(VimAction::ToggleToc);
+            }
 
-        // Reload: 'r'
-        if input.key_pressed(Key::R) {
-            return Some(VimAction::Reload);
-        }
+            // Toggle AI: 'a'
+            if input.key_pressed(Key::A) {
+                return Some(VimAction::ToggleAi);
+            }
 
-        // Open: 'o'
-        if input.key_pressed(Key::O) {
-            return Some(VimAction::OpenFile);
+            // Toggle Zen Mode: 'z'
+            if input.key_pressed(Key::Z) {
+                return Some(VimAction::ToggleZen);
+            }
+
+            // Toggle Slide Presentation Mode: 'p'
+            if input.key_pressed(Key::P) {
+                return Some(VimAction::ToggleSlideMode);
+            }
+
+            // Reload: 'r'
+            if input.key_pressed(Key::R) {
+                return Some(VimAction::Reload);
+            }
+
+            // Open: 'o'
+            if input.key_pressed(Key::O) {
+                return Some(VimAction::OpenFile);
+            }
         }
 
         None
