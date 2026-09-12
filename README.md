@@ -8,8 +8,8 @@ A standalone, fast, and customizable native Markdown reader built in Rust using 
 
 ## Features
 
-- ⚡ **Native Performance**: Instant 60+ FPS rendering powered by `egui` and `pulldown-cmark`, using ~30MB memory.
-- 🎨 **8 Built-in Themes**:
+- **Native Performance**: Instant 60+ FPS rendering powered by `egui` and `pulldown-cmark`, using ~30MB memory.
+- **8 Built-in Themes**:
   - `GitHub Dark` (default)
   - `GitHub Light`
   - `Catppuccin Mocha`
@@ -18,16 +18,16 @@ A standalone, fast, and customizable native Markdown reader built in Rust using 
   - `Nord`
   - `Solarized Dark`
   - `Solarized Light`
-- 📑 **Table of Contents (TOC) Sidebar**: Hierarchical document outline (H1–H6) with clickable jump-to navigation and real-time heading filter.
-- 🔍 **In-Document Search**: Interactive find bar (`Ctrl+F`) with match count, previous/next cycling, and highlighted search terms.
-- 🔄 **Live Auto-Reload**: Watches opened files with debouncing (`notify-debouncer-mini`) and seamlessly updates content when edited externally.
-- 💻 **Syntax Highlighting**: Full code block highlighting via `syntect` with a one-click "📋 Copy" button.
-- 📊 **Document Statistics**: Live word count, character count, line count, and estimated reading time.
-- 📤 **Self-Contained HTML Export**: Export formatted Markdown documents to standalone HTML with embedded styling matching your active theme.
-- 🖼️ **Image Support**: Renders local relative and absolute images with automatic texture caching.
-- 🔗 **Interactive Links**: Opens web links in your default browser and switches to local `.md` files directly inside `mdeader`.
-- 🔍 **Zoom & Typography**: Dynamic font scaling (`Ctrl++` / `Ctrl+-` / `Ctrl+0`) and persistent preferences.
-- 📁 **Recent Files & Drag-and-Drop**: Easily access your recently opened documents or drop any `.md` file onto the window.
+- **Table of Contents (TOC) Sidebar**: Hierarchical document outline (H1–H6) with clickable jump-to navigation and real-time heading filter.
+- **In-Document Search**: Interactive find bar (`Ctrl+F`) with match count, previous/next cycling, and highlighted search terms.
+- **Live Auto-Reload**: Watches opened files with debouncing (`notify-debouncer-mini`) and seamlessly updates content when edited externally.
+- **Syntax Highlighting**: Full code block highlighting via `syntect` with a one-click "Copy" button.
+- **Document Statistics**: Live word count, character count, line count, and estimated reading time.
+- **Self-Contained HTML Export**: Export formatted Markdown documents to standalone HTML with embedded styling matching your active theme.
+- **Image Support**: Renders local relative and absolute images with automatic texture caching.
+- **Interactive Links**: Opens web links in your default browser and switches to local `.md` files directly inside `mdeader`.
+- **Zoom & Typography**: Dynamic font scaling (`Ctrl++` / `Ctrl+-` / `Ctrl+0`) and persistent preferences.
+- **Recent Files & Drag-and-Drop**: Easily access your recently opened documents or drop any `.md` file onto the window.
 
 ---
 
