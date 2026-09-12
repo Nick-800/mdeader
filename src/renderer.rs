@@ -1,4 +1,4 @@
-use crate::document::{Alignment, DocNode, InlineSpan, ListItem, TableRow};
+use crate::document::{AlertKind, Alignment, DocNode, InlineSpan, ListItem, TableRow};
 use crate::image_loader::ImageCache;
 use crate::syntax::SyntaxHighlighter;
 use crate::theme::ThemePalette;
@@ -184,6 +184,10 @@ impl<'a> MarkdownRenderer<'a> {
                     });
             }
 
+            DocNode::Alert { kind, children } => {
+                self.render_alert(ui, *kind, children, highlighter, images);
+            }
+
             DocNode::List {
                 ordered,
                 start_num,
@@ -244,9 +248,67 @@ impl<'a> MarkdownRenderer<'a> {
         } else {
             ui.colored_label(
                 self.palette.muted,
-                format!("🖼 [Image: {} ({})]", if alt.is_empty() { url } else { alt }, url),
+                format!("[Image: {} ({})]", if alt.is_empty() { url } else { alt }, url),
             );
         }
+    }
+
+    fn render_alert(
+        &mut self,
+        ui: &mut Ui,
+        kind: AlertKind,
+        children: &[DocNode],
+        highlighter: &SyntaxHighlighter,
+        images: &mut ImageCache,
+    ) {
+        let border_color = self.palette.alert_border(kind);
+        let bg_color = self.palette.alert_bg(kind);
+        let title_color = self.palette.alert_title_color(kind);
+
+        Frame::none()
+            .fill(bg_color)
+            .rounding(Rounding::same(6.0))
+            .stroke(Stroke::new(1.0, self.palette.code_border))
+            .inner_margin(Margin {
+                left: 16.0,
+                right: 14.0,
+                top: 10.0,
+                bottom: 10.0,
+            })
+            .show(ui, |ui| {
+                let min_pos = ui.min_rect().min;
+                let max_y = ui.min_rect().max.y;
+
+                ui.horizontal(|ui| {
+                    ui.colored_label(
+                        title_color,
+                        egui::RichText::new(format!("[{}]", kind.tag_label()))
+                            .strong()
+                            .size(self.font_size * 0.95),
+                    );
+                });
+                ui.add_space(4.0);
+
+                for child in children {
+                    self.render_node(ui, child, highlighter, images);
+                    ui.add_space(3.0);
+                }
+
+                let line_rect = Rect::from_min_max(
+                    Pos2::new(min_pos.x, min_pos.y),
+                    Pos2::new(min_pos.x + 4.0, max_y),
+                );
+                ui.painter().rect_filled(
+                    line_rect,
+                    Rounding {
+                        nw: 6.0,
+                        ne: 0.0,
+                        sw: 6.0,
+                        se: 0.0,
+                    },
+                    border_color,
+                );
+            });
     }
 
     fn render_code_block(
@@ -278,7 +340,7 @@ impl<'a> MarkdownRenderer<'a> {
                     ui.colored_label(self.palette.muted, display_lang);
 
                     ui.with_layout(egui::Layout::right_to_left(Align::Center), |ui| {
-                        if ui.button("📋 Copy").on_hover_text("Copy code to clipboard").clicked() {
+                        if ui.button("Copy").on_hover_text("Copy code to clipboard").clicked() {
                             self.events.push(RenderEvent::CopyToClipboard(code_str));
                         }
                     });
@@ -313,13 +375,13 @@ impl<'a> MarkdownRenderer<'a> {
                 ui.add_space(indent);
 
                 if let Some(checked) = item.checkbox {
-                    let mark = if checked { "☑ " } else { "☐ " };
+                    let mark = if checked { "[x] " } else { "[ ] " };
                     ui.colored_label(self.palette.accent, mark);
                 } else if ordered {
                     let num = start_num + (i as u64);
                     ui.colored_label(self.palette.muted, format!("{}.", num));
                 } else {
-                    ui.colored_label(self.palette.accent, "•");
+                    ui.colored_label(self.palette.accent, "-");
                 }
 
                 ui.vertical(|ui| {
@@ -613,7 +675,7 @@ impl<'a> MarkdownRenderer<'a> {
         for span in spans {
             if let InlineSpan::Link { url, text, .. } = span {
                 let link_text = text.iter().map(|s| s.plain_text()).collect::<String>();
-                let btn_text = format!("🔗 {}", link_text);
+                let btn_text = format!("[link] {}", link_text);
                 if ui.small_button(btn_text).clicked() {
                     if url.starts_with("http://") || url.starts_with("https://") {
                         self.events.push(RenderEvent::OpenLink(url.clone()));

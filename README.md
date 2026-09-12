@@ -1,5 +1,9 @@
 # mdeader
 
+<p align="center">
+  <img src="assets/logo.png" alt="mdeader logo" width="180" />
+</p>
+
 A standalone, fast, and customizable native Markdown reader built in Rust using [`eframe`](https://github.com/emilk/egui/tree/master/crates/eframe) / [`egui`](https://github.com/emilk/egui).
 
 `mdeader` provides a smooth, instantaneous desktop reading experience for Markdown documents with zero web engine / Electron overhead.

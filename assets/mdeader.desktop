@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Name=mdeader
+GenericName=Markdown Reader
+Comment=Fast and customizable native Markdown reader
+Exec=mdeader %F
+Icon=mdeader
+Terminal=false
+Categories=Utility;Viewer;
+MimeType=text/markdown;text/x-markdown;
+StartupWMClass=mdeader
+Keywords=markdown;reader;viewer;mdeader;

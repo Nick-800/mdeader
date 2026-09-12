@@ -84,6 +84,38 @@ pub struct ListItem {
     pub children: Vec<DocNode>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AlertKind {
+    Note,
+    Tip,
+    Important,
+    Warning,
+    Caution,
+}
+
+impl AlertKind {
+    #[allow(dead_code)]
+    pub fn title(&self) -> &'static str {
+        match self {
+            AlertKind::Note => "Note",
+            AlertKind::Tip => "Tip",
+            AlertKind::Important => "Important",
+            AlertKind::Warning => "Warning",
+            AlertKind::Caution => "Caution",
+        }
+    }
+
+    pub fn tag_label(&self) -> &'static str {
+        match self {
+            AlertKind::Note => "NOTE",
+            AlertKind::Tip => "TIP",
+            AlertKind::Important => "IMPORTANT",
+            AlertKind::Warning => "WARNING",
+            AlertKind::Caution => "CAUTION",
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum DocNode {
     Heading {
@@ -99,6 +131,10 @@ pub enum DocNode {
         code: String,
     },
     BlockQuote(Vec<DocNode>),
+    Alert {
+        kind: AlertKind,
+        children: Vec<DocNode>,
+    },
     List {
         ordered: bool,
         start_num: u64,
@@ -343,7 +379,11 @@ impl Document {
                         }
                     }
                 }
-                (Some(DocNode::BlockQuote(children)), idx)
+                if let Some(alert) = Self::try_parse_alert(&mut children) {
+                    (Some(alert), idx)
+                } else {
+                    (Some(DocNode::BlockQuote(children)), idx)
+                }
             }
 
             Event::Start(Tag::List(first_num)) => {
@@ -662,6 +702,100 @@ impl Document {
         }
     }
 
+    fn try_parse_alert(children: &mut Vec<DocNode>) -> Option<DocNode> {
+        if children.is_empty() {
+            return None;
+        }
+
+        let alert_kind = match &mut children[0] {
+            DocNode::Paragraph(spans) => {
+                if spans.is_empty() {
+                    return None;
+                }
+
+                let mut kind = None;
+                let mut spans_consumed = 0;
+                let mut remainder_text = String::new();
+
+                // Check pattern 1: spans[0] is Text and starts with [!TAG]
+                if let Some(InlineSpan::Text(t0)) = spans.get(0) {
+                    let t0_trim = t0.trim_start();
+                    let upper = t0_trim.to_ascii_uppercase();
+                    for (k, tag) in [
+                        (AlertKind::Note, "[!NOTE]"),
+                        (AlertKind::Tip, "[!TIP]"),
+                        (AlertKind::Important, "[!IMPORTANT]"),
+                        (AlertKind::Warning, "[!WARNING]"),
+                        (AlertKind::Caution, "[!CAUTION]"),
+                    ] {
+                        if upper.starts_with(tag) {
+                            kind = Some(k);
+                            spans_consumed = 1;
+                            remainder_text = t0_trim[tag.len()..].trim_start().to_string();
+                            break;
+                        }
+                    }
+                }
+
+                // Check pattern 2: spans are split into Text("["), Text("!TAG"), Text("]...")
+                if kind.is_none() && spans.len() >= 3 {
+                    if let (Some(InlineSpan::Text(t0)), Some(InlineSpan::Text(t1)), Some(InlineSpan::Text(t2))) =
+                        (spans.get(0), spans.get(1), spans.get(2))
+                    {
+                        if t0.trim_start() == "[" {
+                            let tag_upper = t1.trim().to_ascii_uppercase();
+                            let detected_kind = match tag_upper.as_str() {
+                                "!NOTE" => Some(AlertKind::Note),
+                                "!TIP" => Some(AlertKind::Tip),
+                                "!IMPORTANT" => Some(AlertKind::Important),
+                                "!WARNING" => Some(AlertKind::Warning),
+                                "!CAUTION" => Some(AlertKind::Caution),
+                                _ => None,
+                            };
+
+                            if let Some(k) = detected_kind {
+                                let t2_trim = t2.trim_start();
+                                if t2_trim.starts_with(']') {
+                                    kind = Some(k);
+                                    spans_consumed = 3;
+                                    remainder_text = t2_trim[1..].trim_start().to_string();
+                                }
+                            }
+                        }
+                    }
+                }
+
+                let Some(alert_kind) = kind else {
+                    return None;
+                };
+
+                for _ in 0..spans_consumed {
+                    spans.remove(0);
+                }
+
+                if !remainder_text.is_empty() {
+                    spans.insert(0, InlineSpan::Text(remainder_text));
+                } else if let Some(InlineSpan::SoftBreak) | Some(InlineSpan::HardBreak) = spans.first() {
+                    spans.remove(0);
+                }
+
+                alert_kind
+            }
+            _ => return None,
+        };
+
+        if let DocNode::Paragraph(spans) = &mut children[0] {
+            if spans.is_empty() {
+                children.remove(0);
+            }
+        }
+
+        Some(DocNode::Alert {
+            kind: alert_kind,
+            children: std::mem::take(children),
+        })
+    }
+
     pub fn search(&self, query: &str) -> Vec<SearchMatch> {
         let mut results = Vec::new();
         if query.trim().is_empty() {
@@ -739,6 +873,29 @@ mod tests {
                 assert_eq!(code.trim(), "fn main() {}");
             }
             _ => panic!("Expected CodeBlock"),
+        }
+    }
+
+    #[test]
+    fn test_alert_parsing() {
+        let md = "> [!NOTE]\n> This is an informative note.\n\n> [!WARNING]\n> Cautionary warning message.";
+        let doc = Document::parse(md);
+        assert_eq!(doc.nodes.len(), 2);
+
+        match &doc.nodes[0] {
+            DocNode::Alert { kind, children } => {
+                assert_eq!(*kind, AlertKind::Note);
+                assert_eq!(children.len(), 1);
+            }
+            _ => panic!("Expected Alert node for NOTE, got {:?}", doc.nodes[0]),
+        }
+
+        match &doc.nodes[1] {
+            DocNode::Alert { kind, children } => {
+                assert_eq!(*kind, AlertKind::Warning);
+                assert_eq!(children.len(), 1);
+            }
+            _ => panic!("Expected Alert node for WARNING"),
         }
     }
 }

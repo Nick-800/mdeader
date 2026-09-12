@@ -1,3 +1,4 @@
+use crate::document::AlertKind;
 use egui::{Color32, Stroke, Visuals};
 use serde::{Deserialize, Serialize};
 
@@ -367,6 +368,38 @@ impl ThemePalette {
         visuals
     }
 
+    pub fn alert_border(&self, kind: AlertKind) -> Color32 {
+        let is_dark = (self.bg.r() as u32 + self.bg.g() as u32 + self.bg.b() as u32) < 380;
+        if is_dark {
+            match kind {
+                AlertKind::Note => Color32::from_rgb(88, 166, 255),
+                AlertKind::Tip => Color32::from_rgb(63, 185, 80),
+                AlertKind::Important => Color32::from_rgb(163, 113, 247),
+                AlertKind::Warning => Color32::from_rgb(210, 153, 34),
+                AlertKind::Caution => Color32::from_rgb(248, 81, 73),
+            }
+        } else {
+            match kind {
+                AlertKind::Note => Color32::from_rgb(9, 105, 218),
+                AlertKind::Tip => Color32::from_rgb(26, 127, 55),
+                AlertKind::Important => Color32::from_rgb(130, 80, 223),
+                AlertKind::Warning => Color32::from_rgb(154, 103, 0),
+                AlertKind::Caution => Color32::from_rgb(207, 34, 46),
+            }
+        }
+    }
+
+    pub fn alert_bg(&self, kind: AlertKind) -> Color32 {
+        let border = self.alert_border(kind);
+        let is_dark = (self.bg.r() as u32 + self.bg.g() as u32 + self.bg.b() as u32) < 380;
+        let alpha = if is_dark { 25 } else { 18 };
+        Color32::from_rgba_premultiplied(border.r(), border.g(), border.b(), alpha)
+    }
+
+    pub fn alert_title_color(&self, kind: AlertKind) -> Color32 {
+        self.alert_border(kind)
+    }
+
     pub fn hex(c: Color32) -> String {
         format!("#{:02x}{:02x}{:02x}", c.r(), c.g(), c.b())
     }
@@ -440,6 +473,22 @@ hr {{
     border-top: 1px solid {border};
     margin: 2em 0;
 }}
+.markdown-alert {{
+    border-left: 4px solid;
+    padding: 0.5rem 1rem;
+    margin: 1rem 0;
+    border-radius: 4px;
+}}
+.markdown-alert-title {{
+    font-weight: 600;
+    margin-top: 0;
+    margin-bottom: 0.4rem;
+}}
+.markdown-alert-note {{ border-color: #2f81f7; background-color: rgba(47, 129, 247, 0.1); }}
+.markdown-alert-tip {{ border-color: #3fb950; background-color: rgba(63, 185, 80, 0.1); }}
+.markdown-alert-important {{ border-color: #a371f7; background-color: rgba(163, 113, 247, 0.1); }}
+.markdown-alert-warning {{ border-color: #d29922; background-color: rgba(210, 153, 34, 0.1); }}
+.markdown-alert-caution {{ border-color: #f85149; background-color: rgba(248, 81, 73, 0.1); }}
 "#,
             bg = Self::hex(self.bg),
             text = Self::hex(self.text),

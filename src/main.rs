@@ -45,11 +45,18 @@ fn main() -> eframe::Result<()> {
         "mdeader".to_string()
     };
 
+    let mut viewport = egui::ViewportBuilder::default()
+        .with_app_id("mdeader")
+        .with_inner_size([1150.0, 780.0])
+        .with_min_inner_size([650.0, 450.0])
+        .with_title(initial_title);
+
+    if let Some(icon) = load_icon() {
+        viewport = viewport.with_icon(icon);
+    }
+
     let native_options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default()
-            .with_inner_size([1150.0, 780.0])
-            .with_min_inner_size([650.0, 450.0])
-            .with_title(initial_title),
+        viewport,
         ..Default::default()
     };
 
@@ -64,4 +71,16 @@ fn main() -> eframe::Result<()> {
             Ok(Box::new(MdeaderApp::new(cc, file, theme, zoom)))
         }),
     )
+}
+
+fn load_icon() -> Option<egui::IconData> {
+    let bytes = include_bytes!("../assets/icon.png");
+    let img = image::load_from_memory(bytes).ok()?;
+    let rgba = img.to_rgba8();
+    let (width, height) = rgba.dimensions();
+    Some(egui::IconData {
+        rgba: rgba.into_raw(),
+        width,
+        height,
+    })
 }

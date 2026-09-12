@@ -60,4 +60,22 @@ impl ImageCache {
         let name = path.to_string_lossy().to_string();
         Some(ctx.load_texture(name, color_image, TextureOptions::LINEAR))
     }
+
+    pub fn get_embedded_logo(&mut self, ctx: &Context) -> Option<&TextureHandle> {
+        let key = PathBuf::from("__embedded_logo__");
+        if !self.textures.contains_key(&key) {
+            let bytes = include_bytes!("../assets/icon.png");
+            let handle = if let Ok(img) = image::load_from_memory(bytes) {
+                let size = [img.width() as _, img.height() as _];
+                let image_buffer = img.to_rgba8();
+                let pixels = image_buffer.as_flat_samples();
+                let color_image = ColorImage::from_rgba_unmultiplied(size, pixels.as_slice());
+                Some(ctx.load_texture("embedded_logo", color_image, TextureOptions::LINEAR))
+            } else {
+                None
+            };
+            self.textures.insert(key.clone(), handle);
+        }
+        self.textures.get(&key).and_then(|opt| opt.as_ref())
+    }
 }

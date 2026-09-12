@@ -32,7 +32,7 @@ impl TocView {
             ui.horizontal(|ui| {
                 ui.heading("Outline");
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                    if !self.filter.is_empty() && ui.small_button("✕").clicked() {
+                    if !self.filter.is_empty() && ui.small_button("x").on_hover_text("Clear filter").clicked() {
                         self.filter.clear();
                     }
                 });

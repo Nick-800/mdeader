@@ -249,7 +249,7 @@ impl MdeaderApp {
 
     fn render_top_bar(&mut self, ui: &mut Ui, palette: &ThemePalette) {
         ui.horizontal(|ui| {
-            if ui.button("📂 Open (Ctrl+O)").clicked() {
+            if ui.button("Open (Ctrl+O)").clicked() {
                 self.trigger_open_file_dialog();
             }
 
@@ -268,19 +268,19 @@ impl MdeaderApp {
                 }
             });
 
-            if ui.button("🔄 Reload").clicked() {
+            if ui.button("Reload (Ctrl+R)").clicked() {
                 self.reload_current_file();
             }
 
             ui.separator();
 
-            let toc_btn_text = if self.config.show_toc { "📖 Hide TOC" } else { "📖 TOC" };
+            let toc_btn_text = if self.config.show_toc { "Hide TOC" } else { "TOC" };
             if ui.selectable_label(self.config.show_toc, toc_btn_text).clicked() {
                 self.config.show_toc = !self.config.show_toc;
                 let _ = self.config.save();
             }
 
-            let search_btn_text = if self.search_open { "🔍 Search" } else { "🔍 Find" };
+            let search_btn_text = if self.search_open { "Search" } else { "Find (Ctrl+F)" };
             if ui.selectable_label(self.search_open, search_btn_text).clicked() {
                 self.search_open = !self.search_open;
             }
@@ -308,7 +308,7 @@ impl MdeaderApp {
             ui.separator();
 
             // Zoom controls
-            if ui.small_button("−").on_hover_text("Zoom out (Ctrl+-)").clicked() {
+            if ui.small_button("-").on_hover_text("Zoom out (Ctrl+-)").clicked() {
                 self.config.zoom = (self.config.zoom - 0.1).max(0.6);
                 let _ = self.config.save();
             }
@@ -325,11 +325,11 @@ impl MdeaderApp {
             }
 
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                if ui.button("📤 Export HTML").clicked() {
+                if ui.button("Export HTML (Ctrl+E)").clicked() {
                     self.trigger_export_dialog();
                 }
 
-                if ui.button("📋 Copy Raw").on_hover_text("Copy entire Markdown source").clicked() {
+                if ui.button("Copy Raw").on_hover_text("Copy entire Markdown source").clicked() {
                     if let Some(ref doc) = self.document {
                         let raw = doc.raw.clone();
                         self.copy_to_clipboard(&raw);
@@ -353,6 +353,21 @@ impl MdeaderApp {
                 }
 
                 let match_count = self.search_results.len();
+
+                // Enter and Shift+Enter cycling
+                if response.has_focus() && ui.input(|i| i.key_pressed(Key::Enter)) && match_count > 0 {
+                    let shift = ui.input(|i| i.modifiers.shift);
+                    if shift {
+                        if self.active_search_idx == 0 {
+                            self.active_search_idx = match_count - 1;
+                        } else {
+                            self.active_search_idx -= 1;
+                        }
+                    } else {
+                        self.active_search_idx = (self.active_search_idx + 1) % match_count;
+                    }
+                }
+
                 let match_text = if match_count == 0 {
                     if self.search_query.is_empty() {
                         "".to_string()
@@ -366,19 +381,19 @@ impl MdeaderApp {
                 ui.colored_label(palette.muted, match_text);
 
                 if match_count > 0 {
-                    if ui.small_button("▲").clicked() {
+                    if ui.small_button("<").on_hover_text("Previous match (Shift+Enter)").clicked() {
                         if self.active_search_idx == 0 {
                             self.active_search_idx = match_count - 1;
                         } else {
                             self.active_search_idx -= 1;
                         }
                     }
-                    if ui.small_button("▼").clicked() {
+                    if ui.small_button(">").on_hover_text("Next match (Enter)").clicked() {
                         self.active_search_idx = (self.active_search_idx + 1) % match_count;
                     }
                 }
 
-                if ui.small_button("✕").clicked() {
+                if ui.small_button("x").on_hover_text("Close (Esc)").clicked() {
                     self.search_open = false;
                     self.search_query.clear();
                     self.search_results.clear();
@@ -414,15 +429,15 @@ impl MdeaderApp {
                 // Toast
                 if let Some((ref msg, ref instant)) = self.toast {
                     if instant.elapsed().as_secs() < 3 {
-                        ui.colored_label(palette.accent, format!("✓ {}", msg));
+                        ui.colored_label(palette.accent, format!("[OK] {}", msg));
                     }
                 }
 
                 // Watch indicator
                 if self.config.watch_mode && self.watcher.is_watching() {
-                    ui.colored_label(Color32::from_rgb(46, 160, 67), "● Live Watch");
+                    ui.colored_label(Color32::from_rgb(46, 160, 67), "[Live Watch]");
                 } else {
-                    ui.colored_label(palette.muted, "○ Static");
+                    ui.colored_label(palette.muted, "[Static]");
                 }
             });
         });
@@ -519,12 +534,17 @@ impl eframe::App for MdeaderApp {
                 // Empty state
                 ui.centered_and_justified(|ui| {
                     ui.vertical_centered(|ui| {
+                        if let Some(logo) = self.image_cache.get_embedded_logo(ui.ctx()) {
+                            ui.add(egui::Image::new(logo).fit_to_exact_size(egui::vec2(128.0, 128.0)));
+                            ui.add_space(12.0);
+                        }
+
                         ui.heading("mdeader");
                         ui.add_space(8.0);
                         ui.colored_label(palette.muted, "A standalone, fast Markdown reader in Rust");
                         ui.add_space(16.0);
 
-                        if ui.button("📂 Open Markdown File (Ctrl+O)").clicked() {
+                        if ui.button("Open Markdown File (Ctrl+O)").clicked() {
                             self.trigger_open_file_dialog();
                         }
 
