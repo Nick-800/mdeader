@@ -398,6 +398,25 @@ impl MdeaderApp {
             }
         }
 
+        // Home: Jump to top of document
+        if input.key_pressed(Key::Home) {
+            self.scroll_delta_y += 100_000.0;
+            self.target_heading_idx = Some(0);
+            self.active_heading_idx = Some(0);
+        }
+
+        // End: Jump to bottom of document
+        if input.key_pressed(Key::End) {
+            self.scroll_delta_y -= 100_000.0;
+            if let Some(ref doc) = self.document {
+                if !doc.headings.is_empty() {
+                    let last = doc.headings.len() - 1;
+                    self.target_heading_idx = Some(last);
+                    self.active_heading_idx = Some(last);
+                }
+            }
+        }
+
         // Ctrl+O: Open
         if cmd && input.key_pressed(Key::O) {
             self.trigger_open_file_dialog();

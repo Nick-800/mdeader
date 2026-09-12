@@ -32,6 +32,7 @@ pub struct VimController {
     pub enabled: bool,
     pub mode: VimModeState,
     pub pending_keys: String,
+    pub last_key_time: Option<std::time::Instant>,
 }
 
 impl Default for VimController {
@@ -46,6 +47,7 @@ impl VimController {
             enabled,
             mode: VimModeState::Normal,
             pending_keys: String::new(),
+            last_key_time: None,
         }
     }
 
@@ -75,6 +77,14 @@ impl VimController {
             return None;
         }
 
+        // Expire pending keys if older than 1 second
+        if let Some(time) = self.last_key_time {
+            if time.elapsed() > std::time::Duration::from_millis(1000) {
+                self.pending_keys.clear();
+                self.last_key_time = None;
+            }
+        }
+
         // Only process navigation in Normal mode
         if self.mode != VimModeState::Normal {
             return None;
@@ -84,33 +94,40 @@ impl VimController {
 
         // Navigation key actions: Ctrl+D / Ctrl+U
         if has_cmd && input.key_pressed(Key::D) {
+            self.pending_keys.clear();
             return Some(VimAction::ScrollDownHalfPage);
         }
         if has_cmd && input.key_pressed(Key::U) {
+            self.pending_keys.clear();
             return Some(VimAction::ScrollUpHalfPage);
         }
 
         // Only handle unmodified single letter keys if no Command / Ctrl is pressed
         if !has_cmd {
             if input.key_pressed(Key::J) || input.key_pressed(Key::ArrowDown) {
+                self.pending_keys.clear();
                 return Some(VimAction::ScrollDownLine);
             }
             if input.key_pressed(Key::K) || input.key_pressed(Key::ArrowUp) {
+                self.pending_keys.clear();
                 return Some(VimAction::ScrollUpLine);
             }
 
             // 'gg' or 'G'
             if input.modifiers.shift && input.key_pressed(Key::G) {
                 self.pending_keys.clear();
+                self.last_key_time = None;
                 return Some(VimAction::ScrollBottom);
             }
 
             if input.key_pressed(Key::G) {
                 if self.pending_keys == "g" {
                     self.pending_keys.clear();
+                    self.last_key_time = None;
                     return Some(VimAction::ScrollTop);
                 } else {
                     self.pending_keys = "g".to_string();
+                    self.last_key_time = Some(std::time::Instant::now());
                     return None;
                 }
             }
@@ -119,16 +136,13 @@ impl VimController {
             if input.key_pressed(Key::Y) {
                 if self.pending_keys == "y" {
                     self.pending_keys.clear();
+                    self.last_key_time = None;
                     return Some(VimAction::CopyRaw);
                 } else {
                     self.pending_keys = "y".to_string();
+                    self.last_key_time = Some(std::time::Instant::now());
                     return None;
                 }
-            }
-
-            // Reset pending keys if any other key was pressed
-            if !self.pending_keys.is_empty() {
-                self.pending_keys.clear();
             }
 
             // Search: '/'
