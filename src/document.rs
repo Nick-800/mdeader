@@ -81,6 +81,7 @@ pub struct TableRow {
 #[derive(Debug, Clone, PartialEq)]
 pub struct ListItem {
     pub checkbox: Option<bool>,
+    pub task_index: Option<usize>,
     pub children: Vec<DocNode>,
 }
 
@@ -192,9 +193,10 @@ impl Document {
 
         let mut idx = 0;
         let mut heading_counter = 0;
+        let mut task_counter = 0;
 
         while idx < events.len() {
-            let (node, new_idx) = Self::parse_block(&events, idx, &mut headings, &mut heading_counter);
+            let (node, new_idx) = Self::parse_block(&events, idx, &mut headings, &mut heading_counter, &mut task_counter);
             if let Some(n) = node {
                 nodes.push(n);
             }
@@ -211,6 +213,88 @@ impl Document {
             headings,
             stats,
         }
+    }
+
+    /// Toggles a markdown task list checkbox by its 0-based task index in the raw markdown text.
+    pub fn toggle_task(raw: &str, target_idx: usize) -> Option<String> {
+        let mut current_idx = 0;
+        let mut result = String::with_capacity(raw.len());
+        let mut toggled = false;
+
+        for (line_idx, line) in raw.lines().enumerate() {
+            if line_idx > 0 {
+                result.push('\n');
+            }
+
+            if !toggled {
+                let trimmed = line.trim_start();
+                let is_task = trimmed.starts_with("- [ ] ")
+                    || trimmed.starts_with("- [x] ")
+                    || trimmed.starts_with("- [X] ")
+                    || trimmed.starts_with("* [ ] ")
+                    || trimmed.starts_with("* [x] ")
+                    || trimmed.starts_with("* [X] ")
+                    || trimmed.starts_with("+ [ ] ")
+                    || trimmed.starts_with("+ [x] ")
+                    || trimmed.starts_with("+ [X] ");
+
+                if is_task {
+                    if current_idx == target_idx {
+                        if let Some(pos) = line.find("[ ]") {
+                            let mut new_line = line.to_string();
+                            new_line.replace_range(pos..pos + 3, "[x]");
+                            result.push_str(&new_line);
+                            toggled = true;
+                            current_idx += 1;
+                            continue;
+                        } else if let Some(pos) = line.find("[x]").or_else(|| line.find("[X]")) {
+                            let mut new_line = line.to_string();
+                            new_line.replace_range(pos..pos + 3, "[ ]");
+                            result.push_str(&new_line);
+                            toggled = true;
+                            current_idx += 1;
+                            continue;
+                        }
+                    }
+                    current_idx += 1;
+                }
+            }
+
+            result.push_str(line);
+        }
+
+        if raw.ends_with('\n') {
+            result.push('\n');
+        }
+
+        if toggled {
+            Some(result)
+        } else {
+            None
+        }
+    }
+
+    /// Splits document nodes into slides using horizontal rules (ThematicBreak) as dividers.
+    pub fn get_slides(&self) -> Vec<Vec<DocNode>> {
+        let mut slides = Vec::new();
+        let mut current_slide = Vec::new();
+
+        for node in &self.nodes {
+            if matches!(node, DocNode::Rule) {
+                if !current_slide.is_empty() {
+                    slides.push(current_slide);
+                    current_slide = Vec::new();
+                }
+            } else {
+                current_slide.push(node.clone());
+            }
+        }
+
+        if !current_slide.is_empty() || slides.is_empty() {
+            slides.push(current_slide);
+        }
+
+        slides
     }
 
     fn compute_stats(raw: &str) -> DocStats {
@@ -236,6 +320,7 @@ impl Document {
         mut idx: usize,
         headings: &mut Vec<HeadingItem>,
         heading_counter: &mut usize,
+        task_counter: &mut usize,
     ) -> (Option<DocNode>, usize) {
         if idx >= events.len() {
             return (None, idx);
@@ -367,7 +452,7 @@ impl Document {
                             break;
                         }
                         _ => {
-                            let (child, next_idx) = Self::parse_block(events, idx, headings, heading_counter);
+                            let (child, next_idx) = Self::parse_block(events, idx, headings, heading_counter, task_counter);
                             if let Some(c) = child {
                                 children.push(c);
                             }
@@ -401,6 +486,7 @@ impl Document {
                         Event::Start(Tag::Item) => {
                             idx += 1;
                             let mut checkbox = None;
+                            let mut task_index = None;
                             let mut item_children = Vec::new();
 
                             while idx < events.len() {
@@ -410,12 +496,15 @@ impl Document {
                                         break;
                                     }
                                     Event::TaskListMarker(checked) => {
+                                        let t = *task_counter;
+                                        *task_counter += 1;
                                         checkbox = Some(*checked);
+                                        task_index = Some(t);
                                         idx += 1;
                                     }
                                     _ => {
                                         let (child, next_idx) =
-                                            Self::parse_block(events, idx, headings, heading_counter);
+                                            Self::parse_block(events, idx, headings, heading_counter, task_counter);
                                         if let Some(c) = child {
                                             item_children.push(c);
                                         }
@@ -430,6 +519,7 @@ impl Document {
 
                             items.push(ListItem {
                                 checkbox,
+                                task_index,
                                 children: item_children,
                             });
                         }
@@ -897,5 +987,36 @@ mod tests {
             }
             _ => panic!("Expected Alert node for WARNING"),
         }
+    }
+
+    #[test]
+    fn test_toggle_task() {
+        let md = "# Tasks\n- [ ] First task\n- [x] Second task\n- [ ] Third task";
+        let doc = Document::parse(md);
+        if let DocNode::List { items, .. } = &doc.nodes[1] {
+            assert_eq!(items[0].checkbox, Some(false));
+            assert_eq!(items[0].task_index, Some(0));
+            assert_eq!(items[1].checkbox, Some(true));
+            assert_eq!(items[1].task_index, Some(1));
+            assert_eq!(items[2].checkbox, Some(false));
+            assert_eq!(items[2].task_index, Some(2));
+        } else {
+            panic!("Expected list node");
+        }
+
+        let updated = Document::toggle_task(md, 0).unwrap();
+        assert!(updated.contains("- [x] First task"));
+        assert!(updated.contains("- [x] Second task"));
+
+        let updated2 = Document::toggle_task(&updated, 1).unwrap();
+        assert!(updated2.contains("- [ ] Second task"));
+    }
+
+    #[test]
+    fn test_get_slides() {
+        let md = "# Slide 1\nContent 1\n\n---\n\n# Slide 2\nContent 2\n\n---\n\n# Slide 3\nContent 3";
+        let doc = Document::parse(md);
+        let slides = doc.get_slides();
+        assert_eq!(slides.len(), 3);
     }
 }

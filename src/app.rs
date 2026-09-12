@@ -7,7 +7,9 @@ use crate::ipc::{IpcCommand, IpcServer};
 use crate::renderer::{MarkdownRenderer, RenderEvent};
 use crate::syntax::SyntaxHighlighter;
 use crate::theme::{ThemeKind, ThemePalette};
+use crate::theme_loader::{CustomTheme, ThemeLoader};
 use crate::toc::TocView;
+use crate::vim::{VimAction, VimController};
 use crate::watcher::FileWatcher;
 use arboard::Clipboard;
 use eframe::egui;
@@ -33,6 +35,17 @@ pub struct MdeaderApp {
     // Remote IPC Server
     pub ipc_server: Option<IpcServer>,
 
+    // Vim Navigation
+    pub vim: VimController,
+
+    // Custom Themes
+    pub custom_themes: Vec<CustomTheme>,
+
+    // Specialized Reading Modes
+    pub zen_mode: bool,
+    pub slide_mode: bool,
+    pub current_slide: usize,
+
     // Search state
     pub search_query: String,
     pub search_open: bool,
@@ -54,6 +67,7 @@ impl MdeaderApp {
         initial_file: Option<PathBuf>,
         initial_theme: Option<String>,
         initial_zoom: Option<f32>,
+        initial_vim: bool,
     ) -> Self {
         let mut config = Config::load();
         if let Some(t) = initial_theme {
@@ -62,9 +76,19 @@ impl MdeaderApp {
         if let Some(z) = initial_zoom {
             config.zoom = z;
         }
+        if initial_vim {
+            config.vim_mode = true;
+        }
 
-        let theme_kind = ThemeKind::from_id(&config.theme);
-        cc.egui_ctx.set_visuals(theme_kind.palette().to_visuals(theme_kind.is_dark()));
+        let custom_themes = ThemeLoader::load_all();
+
+        let (initial_palette, is_dark) = if let Some(custom) = custom_themes.iter().find(|t| t.id == config.theme) {
+            (custom.palette.clone(), custom.is_dark)
+        } else {
+            let theme_kind = ThemeKind::from_id(&config.theme);
+            (theme_kind.palette(), theme_kind.is_dark())
+        };
+        cc.egui_ctx.set_visuals(initial_palette.to_visuals(is_dark));
 
         let clipboard = Clipboard::new().ok();
         let ipc_server = if config.ipc_enabled {
@@ -72,6 +96,8 @@ impl MdeaderApp {
         } else {
             None
         };
+
+        let vim = VimController::new(config.vim_mode);
 
         let mut app = Self {
             config,
@@ -83,6 +109,11 @@ impl MdeaderApp {
             toc_view: TocView::new(),
             ai: AiManager::new(),
             ipc_server,
+            vim,
+            custom_themes,
+            zen_mode: false,
+            slide_mode: false,
+            current_slide: 0,
             search_query: String::new(),
             search_open: false,
             search_results: Vec::new(),
@@ -102,6 +133,15 @@ impl MdeaderApp {
         }
 
         app
+    }
+
+    pub fn active_palette(&self) -> (ThemePalette, bool) {
+        if let Some(custom) = self.custom_themes.iter().find(|t| t.id == self.config.theme) {
+            (custom.palette.clone(), custom.is_dark)
+        } else {
+            let theme_kind = ThemeKind::from_id(&self.config.theme);
+            (theme_kind.palette(), theme_kind.is_dark())
+        }
     }
 
     pub fn open_file(&mut self, path: &Path) {
@@ -215,7 +255,110 @@ impl MdeaderApp {
     }
 
     fn handle_shortcuts(&mut self, ctx: &Context) {
+        // Vim mode keyboard handling
+        if let Some(action) = self.vim.handle_input(ctx) {
+            match action {
+                VimAction::ScrollDownLine | VimAction::ScrollDownHalfPage => {}
+                VimAction::ScrollUpLine | VimAction::ScrollUpHalfPage => {}
+                VimAction::ScrollTop => {
+                    self.target_heading_idx = Some(0);
+                    self.active_heading_idx = Some(0);
+                }
+                VimAction::ScrollBottom => {
+                    if let Some(ref doc) = self.document {
+                        if !doc.headings.is_empty() {
+                            let last = doc.headings.len() - 1;
+                            self.target_heading_idx = Some(last);
+                            self.active_heading_idx = Some(last);
+                        }
+                    }
+                }
+                VimAction::FocusSearch => {
+                    self.search_open = true;
+                }
+                VimAction::SearchNext => {
+                    let count = self.search_results.len();
+                    if count > 0 {
+                        self.active_search_idx = (self.active_search_idx + 1) % count;
+                    }
+                }
+                VimAction::SearchPrev => {
+                    let count = self.search_results.len();
+                    if count > 0 {
+                        if self.active_search_idx == 0 {
+                            self.active_search_idx = count - 1;
+                        } else {
+                            self.active_search_idx -= 1;
+                        }
+                    }
+                }
+                VimAction::ToggleToc => {
+                    self.config.show_toc = !self.config.show_toc;
+                    let _ = self.config.save();
+                }
+                VimAction::ToggleAi => {
+                    self.config.show_ai = !self.config.show_ai;
+                    let _ = self.config.save();
+                }
+                VimAction::ToggleZen => {
+                    self.zen_mode = !self.zen_mode;
+                }
+                VimAction::ToggleSlideMode => {
+                    self.slide_mode = !self.slide_mode;
+                    self.current_slide = 0;
+                }
+                VimAction::Reload => {
+                    self.reload_current_file();
+                }
+                VimAction::OpenFile => {
+                    self.trigger_open_file_dialog();
+                }
+                VimAction::CopyRaw => {
+                    if let Some(ref doc) = self.document {
+                        let raw = doc.raw.clone();
+                        self.copy_to_clipboard(&raw);
+                    }
+                }
+                VimAction::QuitOrEscape => {
+                    if self.slide_mode {
+                        self.slide_mode = false;
+                    } else if self.zen_mode {
+                        self.zen_mode = false;
+                    } else if self.search_open {
+                        self.search_open = false;
+                    }
+                }
+            }
+        }
+
         let input = ctx.input(|i| i.clone());
+
+        // F11: Toggle Zen Mode
+        if input.key_pressed(Key::F11) {
+            self.zen_mode = !self.zen_mode;
+        }
+
+        // F5: Toggle Presentation Slide Mode
+        if input.key_pressed(Key::F5) {
+            self.slide_mode = !self.slide_mode;
+            self.current_slide = 0;
+        }
+
+        // Slide Mode keyboard controls
+        if self.slide_mode {
+            let total_slides = self.document.as_ref().map(|d| d.get_slides().len()).unwrap_or(0);
+            if total_slides > 0 {
+                if input.key_pressed(Key::ArrowRight) || input.key_pressed(Key::Space) || input.key_pressed(Key::PageDown) {
+                    self.current_slide = (self.current_slide + 1).min(total_slides - 1);
+                }
+                if input.key_pressed(Key::ArrowLeft) || input.key_pressed(Key::Backspace) || input.key_pressed(Key::PageUp) {
+                    self.current_slide = self.current_slide.saturating_sub(1);
+                }
+            }
+            if input.key_pressed(Key::Escape) {
+                self.slide_mode = false;
+            }
+        }
 
         // Ctrl+O: Open
         if input.modifiers.command && input.key_pressed(Key::O) {
@@ -329,22 +472,56 @@ impl MdeaderApp {
 
             ui.separator();
 
-            // Theme selection dropdown
-            let current_theme = ThemeKind::from_id(&self.config.theme);
-            let mut selected_theme = current_theme;
+            // Theme selector (built-in + custom)
+            let current_theme_name = if let Some(custom) = self.custom_themes.iter().find(|t| t.id == self.config.theme) {
+                custom.name.clone()
+            } else {
+                ThemeKind::from_id(&self.config.theme).name().to_string()
+            };
 
             egui::ComboBox::from_id_source("theme_selector")
-                .selected_text(current_theme.name())
+                .selected_text(current_theme_name)
                 .show_ui(ui, |ui| {
+                    ui.label("Built-in Themes:");
                     for t in ThemeKind::ALL {
-                        ui.selectable_value(&mut selected_theme, *t, t.name());
+                        if ui.selectable_label(self.config.theme == t.id(), t.name()).clicked() {
+                            self.config.theme = t.id().to_string();
+                            let _ = self.config.save();
+                            ui.ctx().set_visuals(t.palette().to_visuals(t.is_dark()));
+                        }
+                    }
+
+                    if !self.custom_themes.is_empty() {
+                        ui.separator();
+                        ui.label("Custom Themes:");
+                        let custom_list = self.custom_themes.clone();
+                        for custom in custom_list {
+                            if ui.selectable_label(self.config.theme == custom.id, &custom.name).clicked() {
+                                self.config.theme = custom.id.clone();
+                                let _ = self.config.save();
+                                ui.ctx().set_visuals(custom.palette.to_visuals(custom.is_dark));
+                            }
+                        }
                     }
                 });
 
-            if selected_theme != current_theme {
-                self.config.theme = selected_theme.id().to_string();
+            ui.separator();
+
+            // Niche Mode controls
+            let vim_btn_text = if self.config.vim_mode { "Vim: ON" } else { "Vim" };
+            if ui.selectable_label(self.config.vim_mode, vim_btn_text).on_hover_text("Toggle Vim modal navigation").clicked() {
+                self.config.vim_mode = !self.config.vim_mode;
+                self.vim.enabled = self.config.vim_mode;
                 let _ = self.config.save();
-                ui.ctx().set_visuals(selected_theme.palette().to_visuals(selected_theme.is_dark()));
+            }
+
+            if ui.button("Zen (F11)").on_hover_text("Distraction-free reading canvas").clicked() {
+                self.zen_mode = true;
+            }
+
+            if ui.button("Slides (F5)").on_hover_text("Presentation slide deck mode").clicked() {
+                self.slide_mode = true;
+                self.current_slide = 0;
             }
 
             ui.separator();
@@ -468,6 +645,11 @@ impl MdeaderApp {
             }
 
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                // Vim mode badge
+                if self.config.vim_mode {
+                    ui.colored_label(palette.accent, self.vim.status_badge());
+                }
+
                 // IPC indicator
                 if self.config.ipc_enabled && self.ipc_server.is_some() {
                     ui.colored_label(palette.muted, format!("[IPC :{}]", self.config.ipc_port));
@@ -539,9 +721,161 @@ impl eframe::App for MdeaderApp {
             self.reload_current_file();
         }
 
-        let theme_kind = ThemeKind::from_id(&self.config.theme);
-        let palette = theme_kind.palette();
+        let (palette, _is_dark) = self.active_palette();
 
+        // 1. Presentation Slide Deck Mode
+        if self.slide_mode {
+            CentralPanel::default().show(ctx, |ui| {
+                let Some(ref doc) = self.document else {
+                    ui.centered_and_justified(|ui| {
+                        ui.label("No document open to present");
+                    });
+                    return;
+                };
+
+                let slides = doc.get_slides();
+                let total_slides = slides.len();
+                if total_slides == 0 {
+                    ui.centered_and_justified(|ui| {
+                        ui.label("Document is empty");
+                    });
+                    return;
+                }
+
+                if self.current_slide >= total_slides {
+                    self.current_slide = total_slides.saturating_sub(1);
+                }
+
+                // Slide Header Controls
+                ui.horizontal(|ui| {
+                    ui.strong(format!("Slide {} of {}", self.current_slide + 1, total_slides));
+                    if ui.small_button("< Prev (Left)").clicked() {
+                        self.current_slide = self.current_slide.saturating_sub(1);
+                    }
+                    if ui.small_button("Next > (Right)").clicked() {
+                        self.current_slide = (self.current_slide + 1).min(total_slides - 1);
+                    }
+
+                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                        if ui.button("Exit Slides (Esc / F5)").clicked() {
+                            self.slide_mode = false;
+                        }
+                    });
+                });
+
+                ui.separator();
+                ui.add_space(24.0);
+
+                let slide_nodes = &slides[self.current_slide];
+                let base_dir = self.current_path.as_deref().and_then(|p| p.parent());
+                let presentation_font_size = self.config.font_size * 1.35 * self.config.zoom;
+                let presentation_line_spacing = self.config.line_spacing * 1.15;
+
+                let mut renderer = MarkdownRenderer::new(
+                    base_dir,
+                    &palette,
+                    presentation_font_size,
+                    presentation_line_spacing,
+                    "",
+                    None,
+                );
+
+                ScrollArea::vertical()
+                    .auto_shrink([false, false])
+                    .show(ui, |ui| {
+                        ui.vertical_centered(|ui| {
+                            ui.set_max_width(self.config.max_content_width * 1.15);
+                            renderer.render(ui, slide_nodes, &self.highlighter, &mut self.image_cache);
+                            ui.add_space(40.0);
+                        });
+                    });
+            });
+            return;
+        }
+
+        // 2. Zen Focus Reading Mode
+        if self.zen_mode {
+            CentralPanel::default().show(ctx, |ui| {
+                ui.horizontal(|ui| {
+                    ui.colored_label(palette.muted, "[Zen Mode]");
+                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                        if ui.small_button("Exit Zen (Esc / F11)").clicked() {
+                            self.zen_mode = false;
+                        }
+                    });
+                });
+
+                let mut zen_events = Vec::new();
+                let mut current_doc_raw = None;
+
+                if let Some(ref doc) = self.document {
+                    current_doc_raw = Some(doc.raw.clone());
+                    let base_dir = self.current_path.as_deref().and_then(|p| p.parent());
+                    let effective_font_size = self.config.font_size * self.config.zoom;
+                    let effective_line_spacing = self.config.line_spacing;
+
+                    let mut renderer = MarkdownRenderer::new(
+                        base_dir,
+                        &palette,
+                        effective_font_size,
+                        effective_line_spacing,
+                        &self.search_query,
+                        self.target_heading_idx,
+                    );
+
+                    ScrollArea::vertical()
+                        .auto_shrink([false, false])
+                        .show(ui, |ui| {
+                            ui.vertical_centered(|ui| {
+                                ui.set_max_width(self.config.max_content_width);
+                                ui.add_space(20.0);
+                                renderer.render(ui, &doc.nodes, &self.highlighter, &mut self.image_cache);
+                                ui.add_space(40.0);
+                            });
+                        });
+
+                    self.target_heading_idx = None;
+                    zen_events = renderer.events;
+                }
+
+                for event in zen_events {
+                    match event {
+                        RenderEvent::OpenLink(url) => {
+                            let _ = open::that(url);
+                        }
+                        RenderEvent::OpenFilePath(path) => {
+                            self.open_file(&path);
+                        }
+                        RenderEvent::CopyToClipboard(text) => {
+                            self.copy_to_clipboard(&text);
+                        }
+                        RenderEvent::ExplainCode { lang, code } => {
+                            self.zen_mode = false;
+                            self.config.show_ai = true;
+                            let system_prompt = DocumentContext::build_system_prompt(
+                                self.current_path.as_deref(),
+                                self.document.as_ref(),
+                            );
+                            self.ai.explain_code(&self.config.ai, system_prompt, &lang, &code, ctx.clone());
+                        }
+                        RenderEvent::ToggleTask { task_index } => {
+                            if let Some(ref raw) = current_doc_raw {
+                                if let Some(updated_raw) = Document::toggle_task(raw, task_index) {
+                                    if let Some(ref path) = self.current_path {
+                                        let _ = std::fs::write(path, &updated_raw);
+                                    }
+                                    self.document = Some(Document::parse(&updated_raw));
+                                    self.show_toast("Task toggled".to_string());
+                                }
+                            }
+                        }
+                    }
+                }
+            });
+            return;
+        }
+
+        // 3. Standard Reading Environment
         // Top Panel
         TopBottomPanel::top("top_toolbar").show(ctx, |ui| {
             self.render_top_bar(ui, &palette);
@@ -614,7 +948,10 @@ impl eframe::App for MdeaderApp {
                     .auto_shrink([false, false])
                     .show(ui, |ui| {
                         ui.add_space(12.0);
-                        renderer.render(ui, &doc.nodes, &self.highlighter, &mut self.image_cache);
+                        ui.vertical_centered(|ui| {
+                            ui.set_max_width(self.config.max_content_width);
+                            renderer.render(ui, &doc.nodes, &self.highlighter, &mut self.image_cache);
+                        });
                         ui.add_space(32.0);
                     });
 
@@ -640,6 +977,23 @@ impl eframe::App for MdeaderApp {
                                 self.document.as_ref(),
                             );
                             self.ai.explain_code(&self.config.ai, system_prompt, &lang, &code, ctx.clone());
+                        }
+                        RenderEvent::ToggleTask { task_index } => {
+                            if let Some(ref doc) = self.document {
+                                if let Some(updated_raw) = Document::toggle_task(&doc.raw, task_index) {
+                                    if let Some(ref path) = self.current_path {
+                                        if let Err(e) = std::fs::write(path, &updated_raw) {
+                                            self.show_toast(format!("Failed to save task update: {}", e));
+                                        } else {
+                                            self.document = Some(Document::parse(&updated_raw));
+                                            self.show_toast("Task toggled and saved".to_string());
+                                        }
+                                    } else {
+                                        self.document = Some(Document::parse(&updated_raw));
+                                        self.show_toast("Task toggled".to_string());
+                                    }
+                                }
+                            }
                         }
                     }
                 }

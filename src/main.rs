@@ -8,7 +8,9 @@ mod ipc;
 mod renderer;
 mod syntax;
 mod theme;
+mod theme_loader;
 mod toc;
+mod vim;
 mod watcher;
 
 use app::MdeaderApp;
@@ -27,13 +29,17 @@ struct Cli {
     #[arg(value_name = "FILE")]
     file: Option<PathBuf>,
 
-    /// Theme to use (GitHubDark, GitHubLight, CatppuccinMocha, CatppuccinLatte, Dracula, Nord, SolarizedDark, SolarizedLight)
+    /// Theme to use (GitHubDark, GitHubLight, CatppuccinMocha, CatppuccinLatte, Dracula, Nord, SolarizedDark, SolarizedLight, or custom theme id)
     #[arg(short, long)]
     theme: Option<String>,
 
     /// Initial zoom factor (e.g. 1.0, 1.25)
     #[arg(short, long)]
     zoom: Option<f32>,
+
+    /// Enable modal Vim keybinding navigation
+    #[arg(long)]
+    vim: bool,
 
     /// Remote command: open file in running mdeader instance
     #[arg(long = "remote-open", value_name = "FILE")]
@@ -158,12 +164,13 @@ fn main() -> eframe::Result<()> {
     let file = args.file;
     let theme = args.theme;
     let zoom = args.zoom;
+    let vim = args.vim;
 
     eframe::run_native(
         "mdeader",
         native_options,
         Box::new(move |cc| {
-            Ok(Box::new(MdeaderApp::new(cc, file, theme, zoom)))
+            Ok(Box::new(MdeaderApp::new(cc, file, theme, zoom, vim)))
         }),
     )
 }

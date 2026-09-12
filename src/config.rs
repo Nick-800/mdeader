@@ -41,6 +41,12 @@ pub struct Config {
 
     #[serde(default = "default_ipc_port")]
     pub ipc_port: u16,
+
+    #[serde(default = "default_vim_mode")]
+    pub vim_mode: bool,
+
+    #[serde(default = "default_max_content_width")]
+    pub max_content_width: f32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -97,6 +103,14 @@ fn default_ipc_port() -> u16 {
     19842
 }
 
+fn default_vim_mode() -> bool {
+    false
+}
+
+fn default_max_content_width() -> f32 {
+    860.0
+}
+
 fn default_theme() -> String {
     "GitHubDark".to_string()
 }
@@ -141,6 +155,8 @@ impl Default for Config {
             ai: AiConfig::default(),
             ipc_enabled: default_ipc_enabled(),
             ipc_port: default_ipc_port(),
+            vim_mode: default_vim_mode(),
+            max_content_width: default_max_content_width(),
         }
     }
 }

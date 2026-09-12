@@ -14,6 +14,7 @@ pub enum RenderEvent {
     OpenFilePath(PathBuf),
     CopyToClipboard(String),
     ExplainCode { lang: String, code: String },
+    ToggleTask { task_index: usize },
 }
 
 pub struct MarkdownRenderer<'a> {
@@ -382,8 +383,14 @@ impl<'a> MarkdownRenderer<'a> {
                 ui.add_space(indent);
 
                 if let Some(checked) = item.checkbox {
-                    let mark = if checked { "[x] " } else { "[ ] " };
-                    ui.colored_label(self.palette.accent, mark);
+                    let mut is_checked = checked;
+                    if ui.checkbox(&mut is_checked, "").clicked() {
+                        if let Some(t_idx) = item.task_index {
+                            self.events.push(RenderEvent::ToggleTask {
+                                task_index: t_idx,
+                            });
+                        }
+                    }
                 } else if ordered {
                     let num = start_num + (i as u64);
                     ui.colored_label(self.palette.muted, format!("{}.", num));
